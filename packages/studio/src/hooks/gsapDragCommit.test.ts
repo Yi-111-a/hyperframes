@@ -417,7 +417,7 @@ describe("commitStaticGsapSize", () => {
     expect(commits.map((commit) => commit.mutation.type)).not.toContain("add");
   });
 
-  it("adds exactly one set when no existing size set exists", async () => {
+  it("adds exactly one global set, like position and rotation, when no size set exists", async () => {
     const { commits, callbacks } = optionRecordingCallbacks();
 
     await commitStaticGsapSize(
@@ -434,6 +434,7 @@ describe("commitStaticGsapSize", () => {
       targetSelector: "#puck-a",
       method: "set",
       properties: { width: 300, height: 200 },
+      global: true,
     });
   });
 

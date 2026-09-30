@@ -559,5 +559,6 @@ it("writes a plain size on an element whose only tween is a fade", async () => {
     method: "set",
     position: 0,
     properties: { width: 424, height: 237 },
+    global: true,
   });
 });

@@ -313,6 +313,7 @@ export async function commitStaticGsapSize(
       method: "set",
       position: 0,
       properties: { width, height },
+      global: true,
     },
     { label: "Resize layer", softReload: true },
   );
