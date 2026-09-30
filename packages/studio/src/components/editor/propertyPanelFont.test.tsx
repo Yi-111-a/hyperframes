@@ -37,6 +37,7 @@ describe("FontFamilyField flat trigger", () => {
 
 describe("FontFamilyField font list", () => {
   it("builds the list only while the dropdown is open", async () => {
+    // Families on no Google list, so the field never adds a stylesheet link; fetch covers the font APIs.
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string) => ({
@@ -50,16 +51,21 @@ describe("FontFamilyField font list", () => {
     const root = createRoot(host);
     const render = (value: string) =>
       root.render(<FontFamilyField flat value={value} importedFonts={[]} onCommit={vi.fn()} />);
-    await act(async () => render("Inter"));
-    // The font lists arrive and the value changes while the dropdown is closed, as during a drag.
-    await act(async () => render("Lato"));
-    expect(sortFontOptions).not.toHaveBeenCalled();
+    try {
+      await act(async () => render("Arial"));
+      // The font lists arrive and the value changes while the dropdown is closed, as during a drag.
+      await act(async () => render("Georgia"));
+      expect(sortFontOptions).not.toHaveBeenCalled();
 
-    const trigger = host.querySelector<HTMLButtonElement>('[data-flat-font-trigger="true"]');
-    await act(async () => trigger?.click());
-    expect(sortFontOptions).toHaveBeenCalledTimes(1);
-    expect(host.textContent).toContain("Roboto Slab");
-    act(() => root.unmount());
-    vi.unstubAllGlobals();
+      const trigger = host.querySelector<HTMLButtonElement>('[data-flat-font-trigger="true"]');
+      await act(async () => trigger?.click());
+      expect(sortFontOptions).toHaveBeenCalledTimes(1);
+      expect(host.textContent).toContain("Roboto Slab");
+      expect(document.head.querySelector('link[href*="fonts.googleapis.com"]')).toBeNull();
+    } finally {
+      act(() => root.unmount());
+      host.remove();
+      vi.unstubAllGlobals();
+    }
   });
 });
