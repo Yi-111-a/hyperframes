@@ -217,7 +217,7 @@ function softReloadOrEscalate(
   scriptText: string,
   reloadPreview: () => void,
   origin: "preview_sync" | "sdk_refresh",
-  authoredHtml?: string,
+  authoredHtml: string,
 ): void {
   // Seek the rebuilt timeline to the studio's own authoritative scrub position,
   // not the iframe's raw `__player.getTime()` — see the comment in
@@ -283,20 +283,14 @@ export function applyPreviewSync(
   }
   if (options.deferPreviewSync && !needsFallback) return;
   if (options.previewFallbackLatch) options.previewFallbackLatch.pending = false;
-  if (options.softReload && result.scriptText) {
+  if (options.softReload && result.scriptText && result.after) {
     // A soft-reloadable edit escalates to a full iframe remount ONLY on the
     // PERMANENT "cannot-soft-reload" result (the preview is genuinely stale/
     // broken). The TRANSIENT "verify-failed" does NOT escalate — the value is
     // already correct on screen, and a remount re-flashes the WebGL context AND
     // re-inlines subcomps (reverting their keyframes). The async MotionPath-plugin
     // load failure escalates separately via `onAsyncFailure`.
-    softReloadOrEscalate(
-      iframe,
-      result.scriptText,
-      reloadPreview,
-      "preview_sync",
-      result.after ?? undefined,
-    );
+    softReloadOrEscalate(iframe, result.scriptText, reloadPreview, "preview_sync", result.after);
   } else {
     reloadPreview();
   }

@@ -1,4 +1,5 @@
 import { COLOR_GRADING_SOURCE_HIDDEN_ATTR } from "@hyperframes/core/color-grading";
+import { isCompositionTemplate } from "@hyperframes/parsers/hf-ids";
 import { findAuthoredElement, parseSavedSource } from "./authoredSource";
 import { applyAuthoredInlineOpacity, readStampedAuthoredOpacity } from "./authoredOpacity";
 
@@ -131,16 +132,53 @@ function verifyTimelinesPopulated(win: IframeWindow, targetKeys: string[]): bool
   return Object.keys(timelines).filter((k) => k !== "__proxied").length > 0;
 }
 
-// GSAP masks a folded CSS translate/rotate/scale with `none`; a fresh load has only what the file authors.
-function restoreAuthoredTransforms(
-  style: CSSStyleDeclaration,
-  authored: CSSStyleDeclaration | null,
-) {
-  style.transform = authored?.transform ?? "";
-  if (!authored) return;
-  for (const prop of ["translate", "rotate", "scale"]) {
-    style.setProperty(prop, authored.getPropertyValue(prop));
+// What a fresh load of `file` puts in the style attribute; undefined for a nested composition's element.
+function freshInlineStyle(file: Document, el: Element): string | null | undefined {
+  const source = findAuthoredElement(file, el);
+  if (source) return source.getAttribute("style");
+  if (el.closest("[data-composition-src]")) return undefined;
+  return null;
+}
+
+function restoreNestedInline(el: HTMLElement, css: string): void {
+  const s = el.style;
+  s.cssText = css;
+  s.transform = "";
+  const authored = readStampedAuthoredOpacity(el);
+  if (authored !== null) {
+    applyAuthoredInlineOpacity(s, authored);
+  } else if (
+    el.hasAttribute(COLOR_GRADING_SOURCE_HIDDEN_ATTR) &&
+    s.getPropertyValue("opacity") === "0" &&
+    s.getPropertyPriority("opacity") === "important"
+  ) {
+    s.removeProperty("opacity");
   }
+}
+
+function mayBeTemplateClone(file: Document, el: Element): boolean {
+  if (freshInlineStyle(file, el) !== null) return false;
+  return [...file.querySelectorAll("template")].some((t) => !isCompositionTemplate(t));
+}
+
+type TimelineLike = {
+  kill?: () => void;
+  clear?: () => void;
+  getChildren?: (deep: boolean) => Array<{ targets?: () => Element[] }>;
+};
+
+function collectTargets(win: IframeWindow, doc: Document, keys: string[]): Element[] {
+  const targets = new Set<Element>();
+  for (const key of keys) {
+    const tl = win.__timelines?.[key] as TimelineLike | undefined;
+    try {
+      for (const child of tl?.getChildren?.(true) ?? []) {
+        for (const t of child.targets?.() ?? []) targets.add(t);
+      }
+    } catch {}
+    for (const el of gsapParsedInOwnComposition(doc, key)) targets.add(el);
+  }
+  return [...targets];
 }
 
 function gsapParsedInOwnComposition(doc: Document, key: string): Element[] {
@@ -203,8 +241,8 @@ export interface SoftReloadOptions {
   onAsyncFailure?: () => void;
   /** Seek target for the rebuilt timeline; defaults to the iframe player time. */
   currentTimeOverride?: number;
-  /** After-write file HTML — the primary source for the authored opacity and transform restore. */
-  authoredHtml?: string;
+  /** The file as just written: every reset element gets its inline style back from it. */
+  authoredHtml: string;
   /** A first edit's GSAP bootstrap: "added" may run with no live script, "removed" tears down and runs nothing. */
   bootstrap?: "added" | "removed";
 }
@@ -261,7 +299,7 @@ export function applySoftReloadFinalization(
 export function applySoftReload(
   iframe: HTMLIFrameElement | null,
   scriptText: string,
-  options: SoftReloadOptions = {},
+  options: SoftReloadOptions,
 ): SoftReloadResult {
   const { onAsyncFailure, currentTimeOverride, authoredHtml, bootstrap } = options;
   const removeScript = bootstrap === "removed";
@@ -315,56 +353,25 @@ export function applySoftReload(
   // full iframe reload that destroys the very WebGL context we're preserving.
   let deferredToAsync = false;
 
-  // Authored-opacity resolution for the restore loop below. Three-state:
-  //   "0.98" — the element's authored inline opacity
-  //   ""     — resolved, and the element has NO authored inline opacity
-  //   null   — unknown (no authored HTML supplied, element not found in it,
-  //            and no runtime parse-time stamp)
-  // The just-written file (`authoredHtml`) is the current truth; the runtime's
-  // parse-time stamp (data-hf-authored-opacity, installAuthoredOpacityCapture)
-  // covers elements the file lookup can't resolve. Parsed lazily, at most once.
-  let authoredDoc: Document | null | undefined;
-  const findAuthoredStyle = (el: HTMLElement): CSSStyleDeclaration | null => {
-    if (authoredDoc === undefined) {
-      try {
-        authoredDoc = authoredHtml ? parseSavedSource(authoredHtml) : null;
-      } catch {
-        authoredDoc = null;
-      }
-    }
-    const source = authoredDoc ? findAuthoredElement(authoredDoc, el) : null;
-    // The parsed file lives in this realm, so instanceof holds here, unlike for the iframe nodes below.
-    return source instanceof HTMLElement || source instanceof SVGElement ? source.style : null;
-  };
-  const readAuthoredOpacity = (el: HTMLElement): string | null =>
-    findAuthoredStyle(el)?.opacity ?? readStampedAuthoredOpacity(el);
+  let file: Document;
+  try {
+    file = parseSavedSource(authoredHtml);
+  } catch {
+    return "cannot-soft-reload";
+  }
+  const targets = collectTargets(win, doc, targetKeys);
+  if (targets.some((el) => mayBeTemplateClone(file, el))) return "cannot-soft-reload";
 
   // fallow-ignore-next-line complexity
   const doReload = () => {
     const timelines = win.__timelines;
-    const allTargets: Element[] = [];
 
     // Kill ONLY the target composition's timeline(s) — leaving every other
     // composition's timeline (and its children on the global timeline) intact.
     if (timelines) {
       for (const key of targetKeys) {
-        const tl = timelines[key] as
-          | {
-              kill?: () => void;
-              clear?: () => void;
-              getChildren?: (deep: boolean) => Array<{ targets?: () => Element[] }>;
-            }
-          | undefined;
+        const tl = timelines[key] as TimelineLike | undefined;
         if (!tl) continue;
-        if (tl.getChildren) {
-          try {
-            for (const child of tl.getChildren(true)) {
-              if (typeof child.targets === "function") {
-                for (const t of child.targets()) allTargets.push(t);
-              }
-            }
-          } catch {}
-        }
         try {
           // kill() keeps the children, and the finalize seek renders this timeline until the rebind swaps it.
           tl.clear?.();
@@ -374,52 +381,18 @@ export function applySoftReload(
       }
     }
 
-    const seenTargets = new Set<Element>(allTargets);
-    for (const el of targetKeys.flatMap((key) => gsapParsedInOwnComposition(doc, key))) {
-      if (!seenTargets.has(el)) {
-        seenTargets.add(el);
-        allTargets.push(el);
-      }
-    }
-
-    // Reset GSAP's internal transform cache so from() tweens don't read stale
-    // end values. `clearProps: "all"` is needed to flush the cache, but it also
-    // nukes the element's CSS base (position, width, height, etc.) from the
-    // HTML `style=""` attribute. Save → clear → restore → authored transform props.
-    if (allTargets.length > 0 && win.gsap?.set) {
-      const saved: Array<[HTMLElement, string]> = [];
-      for (const el of allTargets) {
-        // Iframe-realm node: instanceof HTMLElement fails across realms, and
-        // gsap targets() only yields elements here — style access is duck-typed.
-        const styled = el as HTMLElement;
-        if (styled.style?.cssText != null) saved.push([styled, styled.style.cssText]);
-      }
+    if (targets.length > 0 && win.gsap?.set) {
+      const saved = targets.map(
+        (el) => [el as HTMLElement, (el as HTMLElement).style?.cssText] as const,
+      );
       try {
-        win.gsap.set(allTargets, { clearProps: "all" });
+        win.gsap.set(targets, { clearProps: "all" });
       } catch {}
       for (const [el, css] of saved) {
-        const s = el.style;
-        s.cssText = css;
-        restoreAuthoredTransforms(s, findAuthoredStyle(el));
-        // The restored cssText carries RUNTIME opacity, not authored opacity:
-        // a mid-flight tween's interpolated value, or the color-grading hide
-        // (`opacity: 0 !important`). The re-run script's tweens re-initialize
-        // against it — a from() captures it as its END, a to() as its START —
-        // turning the transient into the tween's permanent bound (dimmed or
-        // invisible elements). Put the AUTHORED inline opacity back; the seek
-        // below re-renders the correct animated value either way.
-        const authored = readAuthoredOpacity(el);
-        if (authored !== null) {
-          applyAuthoredInlineOpacity(s, authored);
-        } else if (
-          el.hasAttribute(COLOR_GRADING_SOURCE_HIDDEN_ATTR) &&
-          s.getPropertyValue("opacity") === "0" &&
-          s.getPropertyPriority("opacity") === "important"
-        ) {
-          // Authored value unknown, but this is definitely the grading hide —
-          // never let a from() capture 0; fall back to the CSS cascade.
-          s.removeProperty("opacity");
-        }
+        const fresh = freshInlineStyle(file, el);
+        if (fresh === undefined) restoreNestedInline(el, css ?? "");
+        else if (fresh === null) el.removeAttribute("style");
+        else el.setAttribute("style", fresh);
       }
     }
 

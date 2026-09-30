@@ -116,13 +116,14 @@ function syncTimingEditPreview(
     if (!rebindPreviewTiming(iframe, currentTime)) reloadPreview();
     return;
   }
-  if (!iframe || !outcome.scriptText) {
+  if (!iframe || !outcome.scriptText || !outcome.after) {
     reloadPreview();
     return;
   }
   const result = applySoftReload(iframe, outcome.scriptText, {
     onAsyncFailure: reloadPreview,
     currentTimeOverride: currentTime,
+    authoredHtml: outcome.after,
   });
   if (result === "cannot-soft-reload") reloadPreview();
 }
