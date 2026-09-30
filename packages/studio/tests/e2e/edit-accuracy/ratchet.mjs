@@ -14,6 +14,7 @@ const GATED_PX = ["tracking", "pressJump", "drop", "reload", "render"];
 const LISTED = 30;
 
 /** Passes every gated metric; an unsettled preview fails the metrics it fed, all of them gated. */
+// fallow-ignore-next-line complexity
 export const accurate = (e) =>
   Boolean(e) &&
   !e.error &&
