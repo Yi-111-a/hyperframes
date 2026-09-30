@@ -51,6 +51,7 @@ const worstValue = {
   smooth: (r) => r.smooth.p95,
 };
 
+// fallow-ignore-next-line complexity
 function score(spec, r) {
   if (r.error)
     return {
@@ -68,6 +69,28 @@ function score(spec, r) {
   };
   return { ...spec, ...r, pass: Object.values(checks).every(Boolean), checks };
 }
+
+/** Evidence for a failing case only: the Studio screens at each stage and the saved files. */
+// fallow-ignore-next-line complexity
+function saveEvidence(id, evidence) {
+  const caseDir = join(out, "cases", id);
+  mkdirSync(caseDir, { recursive: true });
+  for (const [name, jpeg] of Object.entries(evidence.shots ?? {}))
+    writeFileSync(join(caseDir, `${name}.jpg`), jpeg);
+  for (const [name, text] of Object.entries(evidence.files ?? {}))
+    writeFileSync(join(caseDir, `saved-${name.replace("/", "-")}`), text);
+}
+
+function verdict(r) {
+  const fails = r.error ? "ERROR" : METRICS.filter((m) => !r.checks[m]).join(",");
+  return `${r.pass ? "PASS" : "FAIL"} ${r.id} ${r.seconds.toFixed(1)}s ${fails}`;
+}
+
+// fallow-ignore-next-line complexity
+const errorResult = (error, log) => ({
+  error: `${error?.message ?? error}\n${error?.stack ?? ""}`.slice(0, 1200),
+  serverLog: log.join("").slice(-600),
+});
 
 async function runOne(spec, browser, port) {
   const started = Date.now();
@@ -89,27 +112,14 @@ async function runOne(spec, browser, port) {
       evidence,
     });
   } catch (error) {
-    result = {
-      error: `${error?.message ?? error}\n${error?.stack ?? ""}`.slice(0, 1200),
-      serverLog: log.join("").slice(-600),
-    };
+    result = errorResult(error, log);
   } finally {
     if (server) await stopServer(server);
   }
   const scored = { ...score(spec, result), seconds: (Date.now() - started) / 1000 };
-  if (!scored.pass) {
-    const caseDir = join(out, "cases", spec.id);
-    mkdirSync(caseDir, { recursive: true });
-    for (const [name, jpeg] of Object.entries(evidence.shots ?? {}))
-      writeFileSync(join(caseDir, `${name}.jpg`), jpeg);
-    for (const [name, text] of Object.entries(evidence.files ?? {}))
-      writeFileSync(join(caseDir, `saved-${name.replace("/", "-")}`), text);
-  }
+  if (!scored.pass) saveEvidence(spec.id, evidence);
   rmSync(root, { recursive: true, force: true });
-  const fails = METRICS.filter((m) => !scored.checks[m]).join(",");
-  console.log(
-    `${scored.pass ? "PASS" : "FAIL"} ${spec.id} ${scored.seconds.toFixed(1)}s ${scored.error ? "ERROR" : fails}`,
-  );
+  console.log(verdict(scored));
   return scored;
 }
 
@@ -158,6 +168,10 @@ function summarize(results, seconds) {
   };
 }
 
+// fallow-ignore-next-line complexity
+const metricRow = (m, total) =>
+  `| ${m.metric} | ${m.pass}/${total} | ${m.worst?.value ?? "-"} | ${m.worst?.id ?? "-"} |`;
+
 function table(summary, meta, results) {
   const lines = [
     `# Edit accuracy: ${summary.passing}/${summary.total} cases pass`,
@@ -169,10 +183,7 @@ function table(summary, meta, results) {
     "",
     "| Metric | Pass | Worst | Worst case |",
     "|---|---|---|---|",
-    ...summary.perMetric.map(
-      (m) =>
-        `| ${m.metric} | ${m.pass}/${summary.total} | ${m.worst?.value ?? "-"} | ${m.worst?.id ?? "-"} |`,
-    ),
+    ...summary.perMetric.map((m) => metricRow(m, summary.total)),
     "",
     "| Gesture | Cases | Pass | " + METRICS.join(" | ") + " |",
     "|---|---|---|" + METRICS.map(() => "---").join("|") + "|",

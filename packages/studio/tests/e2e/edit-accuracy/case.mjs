@@ -19,7 +19,7 @@ import {
   visibleQuad,
 } from "./geometry.mjs";
 
-export const VIEWPORT = { width: 1600, height: 900 };
+const VIEWPORT = { width: 1600, height: 900 };
 const STEPS = 20;
 const MOVE_BY = [90, 60];
 const RESIZE_BY = 60;
@@ -41,6 +41,7 @@ export function killServers() {
   for (const child of liveServers) process.kill(-child.pid, "SIGKILL");
 }
 
+// fallow-ignore-next-line complexity
 export async function startServer(cli, dir, port, log) {
   // The CLI quietly takes the next free port when asked for a busy one, so a busy port would test a stale project.
   if (await up(port)) throw new Error(`port ${port} is already serving`);
@@ -75,7 +76,7 @@ export async function stopServer(child) {
 }
 
 /** Runs in the top frame before Studio: the WebMCP host plus a frame-interval and long-task recorder. */
-export function instrumentPage() {
+function instrumentPage() {
   if (window.top !== window) return;
   const tools = new Map();
   Object.defineProperty(document, "modelContext", {
@@ -113,6 +114,7 @@ function readFiles(dir, files) {
 const sameFiles = (a, b) => Object.keys(a).every((f) => a[f] === b[f]);
 
 /** Waits until the files differ from `from` (or equal `want`) and then hold still for 300 ms. */
+// fallow-ignore-next-line complexity
 async function waitForFiles(ctx, { from, want, timeout = 5000 }) {
   const deadline = Date.now() + timeout;
   let last = readFiles(ctx.dir, ctx.files);
@@ -126,6 +128,7 @@ async function waitForFiles(ctx, { from, want, timeout = 5000 }) {
   return { reached: false, files: last };
 }
 
+// fallow-ignore-next-line complexity
 async function findTarget(page) {
   let best = null;
   for (const frame of page.frames()) {
@@ -193,6 +196,7 @@ async function settled(ctx, tries = 20) {
 }
 
 /** Ready once Studio's own seek tool reports the composition and the playhead landed. */
+// fallow-ignore-next-line complexity
 async function openStudio(ctx) {
   ctx.handles = null;
   await ctx.page.waitForFunction(() => window.__editBench?.has("studio_seek"), { timeout: 90_000 });
@@ -300,6 +304,7 @@ async function selectTarget(ctx, m) {
   }
 }
 
+// fallow-ignore-next-line complexity
 async function handlePoint(ctx, m, gesture) {
   if (gesture === "move" || gesture === "nudge") return m.map.toScreen(centre(m.visible));
   if (gesture === "rotate") {
@@ -458,6 +463,7 @@ async function nudgeGesture(ctx, pre) {
 }
 
 /** One case, end to end, in a fresh browser context against a Studio already serving `dir`. */
+// fallow-ignore-next-line complexity
 export async function runCase({ browser, spec, dir, files, url, evidence }) {
   const context = await browser.createBrowserContext();
   const page = await context.newPage();

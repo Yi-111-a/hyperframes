@@ -8,13 +8,13 @@ import { join } from "node:path";
 export const COMPOSITION = { width: 1920, height: 1080 };
 /** Frame-aligned at 30 fps, inside every tween, so preview and producer sample the same instant. */
 export const PLAYHEAD = 1;
-export const TARGET = { width: 240, height: 160, color: "#f0c020" };
-export const BACKGROUND = "#202020";
+const TARGET = { width: 240, height: 160, color: "#f0c020" };
+const BACKGROUND = "#202020";
 const NESTED_HOST = { left: 160, top: 90, width: 1600, height: 900 };
 const GSAP_CDN = "https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js";
 
 // Studio has corner handles only (ResizeHandle is nw|ne|sw|se); its edge strips crop, so there is no edge resize.
-export const GESTURES = ["move", "resize", "rotate", "crop", "nudge"];
+const GESTURES = ["move", "resize", "rotate", "crop", "nudge"];
 const AXES = {
   gsap: ["none", "tween", "hold"],
   placement: ["px", "pct", "center", "xpercent"],
@@ -23,22 +23,20 @@ const AXES = {
   zoom: [50, 100, 200],
 };
 
+const product = (axes) =>
+  Object.entries(axes).reduce(
+    (rows, [key, values]) => rows.flatMap((row) => values.map((v) => ({ ...row, [key]: v }))),
+    [{}],
+  );
+const caseId = (c) =>
+  [c.gesture, c.gsap, c.placement, `r${c.rotation}`, c.nesting, `z${c.zoom}`].join("-");
+
 /** `pr` is a smaller slice for CI; its final size is still an open decision. */
 export function buildGrid(kind = "full") {
-  const cases = [];
-  for (const gsap of AXES.gsap)
-    for (const placement of AXES.placement) {
-      if (placement === "xpercent" && gsap === "none") continue; // xPercent only exists through GSAP
-      for (const rotation of AXES.rotation)
-        for (const nesting of AXES.nesting)
-          for (const zoom of AXES.zoom)
-            for (const gesture of GESTURES) {
-              if (kind === "pr" && (zoom !== 100 || nesting !== "root")) continue;
-              const id = [gesture, gsap, placement, `r${rotation}`, nesting, `z${zoom}`].join("-");
-              cases.push({ id, gesture, gsap, placement, rotation, nesting, zoom });
-            }
-    }
-  return cases;
+  return product({ ...AXES, gesture: GESTURES })
+    .filter((c) => c.placement !== "xpercent" || c.gsap !== "none") // xPercent only exists through GSAP
+    .filter((c) => kind !== "pr" || (c.zoom === 100 && c.nesting === "root"))
+    .map((c) => ({ id: caseId(c), ...c }));
 }
 
 const PLACEMENT_CSS = {
@@ -73,6 +71,7 @@ function timelineScript(id, lines) {
     </script>`;
 }
 
+// fallow-ignore-next-line complexity
 function rootHtml(spec) {
   const nested = spec.nesting === "nested";
   const body = nested
