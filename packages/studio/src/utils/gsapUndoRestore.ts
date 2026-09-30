@@ -8,7 +8,6 @@ import {
   extractGsapScriptText,
   findGsapScriptElements,
 } from "./gsapSoftReload";
-import { findAuthoredElement, parseSavedSource } from "./authoredSource";
 import { STUDIO_EDIT_ATTRS } from "../components/editor/manualEditsSeekReapply";
 import { markScenesStale } from "../player/sceneSwap";
 
@@ -147,17 +146,6 @@ function syncElementAttributes(target: Element, source: Element): void {
   }
 }
 
-// A gesture folded into the script leaves marks on the live element that every seek would re-impose.
-function syncStaleEditMarks(doc: Document, restored: string): void {
-  const restoredDoc = parseSavedSource(restored);
-  for (const live of doc.querySelectorAll(STUDIO_EDIT_ATTRS.map((attr) => `[${attr}]`).join())) {
-    const source = findAuthoredElement(restoredDoc, live);
-    if (source && STUDIO_EDIT_ATTRS.some((a) => live.getAttribute(a) !== source.getAttribute(a))) {
-      syncElementAttributes(live, source);
-    }
-  }
-}
-
 function readGsapScriptTexts(html: string): string[] {
   const doc = new DOMParser().parseFromString(html, "text/html");
   return findGsapScriptElements(doc).map((script) => script.textContent ?? "");
@@ -254,8 +242,19 @@ export function applyUndoRestoreToPreview(
     reloadPreview();
     return "full";
   }
+  const changedKeys = new Set(diff.changedElementKeys);
+  // Live marks can drift from the file (a folded gesture keeps them, a drag drops them); every seek re-imposes them.
+  for (const [key, restoredEl] of restoredByKey) {
+    const liveEl = liveByKey.get(key);
+    if (
+      liveEl &&
+      STUDIO_EDIT_ATTRS.some((a) => liveEl.getAttribute(a) !== restoredEl.getAttribute(a))
+    ) {
+      changedKeys.add(key);
+    }
+  }
   const changedTargets: Array<{ live: Element; restored: Element }> = [];
-  for (const key of diff.changedElementKeys) {
+  for (const key of changedKeys) {
     const liveEl = liveByKey.get(key);
     const restoredEl = restoredByKey.get(key);
     if (!liveEl || !restoredEl) {
@@ -280,7 +279,6 @@ export function applyUndoRestoreToPreview(
       reloadPreview();
       return "full";
     }
-    syncStaleEditMarks(doc, restored);
     const result = applySoftReload(iframe, script, {
       onAsyncFailure: reloadPreview,
       currentTimeOverride: currentTime,

@@ -256,6 +256,41 @@ describe("applyUndoRestoreToPreview", () => {
     });
   });
 
+  describe("undo lands on the file's Studio marks even when the live page drifted from it", () => {
+    const undo = (live: string, file: string, script: string, restoredScript = script) => {
+      const { iframe, doc } = buildLiveIframe(`${live}<script>${script}</script>`);
+      const files = {
+        [ROOT]: {
+          previous: wrap(`${file}<script>${script}</script>`),
+          restored: wrap(`${file}<script>${restoredScript}</script>`),
+        },
+      };
+      expect(applyUndoRestoreToPreview(iframe, ROOT, files, 3, vi.fn())).toBe("soft");
+      return doc.getElementById("a")!;
+    };
+    const MARKED = `<div id="a" data-hf-studio-path-offset="true" style="--hf-studio-offset-x: 60px">t</div>`;
+
+    it("puts back offset marks a move dropped from the live element (D15)", () => {
+      const el = undo(
+        `<div id="a">t</div>`,
+        MARKED,
+        `window.__timelines["root"]=gsap.timeline().to("#a",{x:9});`,
+        `window.__timelines["root"]=gsap.timeline();`,
+      );
+      expect(el.getAttribute("data-hf-studio-path-offset")).toBe("true");
+    });
+
+    it("drops marks the file lacks even when the script did not change", () => {
+      const el = undo(
+        `<div id="a" data-hf-studio-box-size="true" style="width: 502px">t</div>`,
+        `<div id="a" style="width: 300px">t</div>`,
+        `window.__timelines["root"]=gsap.timeline();`,
+      );
+      expect(el.hasAttribute("data-hf-studio-box-size")).toBe(false);
+      expect(el.getAttribute("style")).toBe("width: 300px");
+    });
+  });
+
   it("full-reloads without partially restoring when any changed live target is missing", () => {
     const { iframe, doc } = buildLiveIframe(`<div id="a" style="z-index: 8">a</div>`);
     const reloadPreview = vi.fn();
