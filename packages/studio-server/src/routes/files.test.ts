@@ -2510,6 +2510,55 @@ tl.to("#b", { duration: 1, x: 200 }, 2);
     expect(result.mutated).toBe(false);
   });
 
+  it("moving or stretching a clip retimes the tweens inside it and leaves outside ones alone", async () => {
+    const comp = `<template id="scene-template">
+  <div data-composition-id="scene" data-width="1920" data-height="1080">
+    <div id="card" class="clip" data-start="1" data-duration="2"><h1>Hi</h1><p id="line">Kid</p></div>
+    <div id="side" class="clip" data-start="0" data-duration="3"></div>
+  </div>
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    tl.from("#card h1", { y: 20, duration: 1 }, 1);
+    tl.to("#line", { x: 10, duration: 1 }, 1.5);
+    tl.to("#side", { x: 5, duration: 1 }, 1);
+    window.__timelines["scene"] = tl;
+  </script>
+</template>`;
+    const projectDir = createProjectDir();
+    writeComp(projectDir, "scene.html", comp);
+    const app = new Hono();
+    registerFileRoutes(app, createAdapter(projectDir));
+    const mutate = async (body: object) => {
+      const res = await app.request(
+        "http://localhost/projects/demo/gsap-mutations/compositions/scene.html",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        },
+      );
+      expect(res.status).toBe(200);
+      return ((await res.json()) as { after: string }).after;
+    };
+
+    const moved = await mutate({ type: "shift-positions", targetSelector: "#card", delta: 2 });
+    expect(moved).toContain('tl.from("#card h1", { y: 20, duration: 1 }, 3);');
+    expect(moved).toContain('tl.to("#line", { x: 10, duration: 1 }, 3.5);');
+    expect(moved).toContain('tl.to("#side", { x: 5, duration: 1 }, 1);');
+
+    const stretched = await mutate({
+      type: "scale-positions",
+      targetSelector: "#card",
+      oldStart: 3,
+      oldDuration: 2,
+      newStart: 3,
+      newDuration: 4,
+    });
+    expect(stretched).toContain('tl.from("#card h1", { y: 20, duration: 2 }, 3);');
+    expect(stretched).toContain('tl.to("#line", { x: 10, duration: 2 }, 4);');
+    expect(stretched).toContain('tl.to("#side", { x: 5, duration: 1 }, 1);');
+  });
+
   it("rejects a shift-positions-batch with a missing/non-array `shifts` field (400)", async () => {
     const projectDir = createProjectDir();
     writeHtml(

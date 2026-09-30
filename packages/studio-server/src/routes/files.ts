@@ -676,6 +676,7 @@ function updateReferences(projectDir: string, oldPath: string, newPath: string):
 function extractGsapScriptBlock(html: string): {
   scriptText: string;
   document: Document;
+  root: ParentNode;
   replaceScript: (newText: string) => string;
 } | null {
   const { document } = parseHTML(ensureHfIds(html));
@@ -695,6 +696,7 @@ function extractGsapScriptBlock(html: string): {
       return {
         scriptText: content,
         document,
+        root: script.closest("template") ?? document,
         replaceScript(newText: string): string {
           script.textContent = newText;
           return document.toString();
@@ -1707,13 +1709,13 @@ function executeGsapMutationAcorn(
     case "shift-positions": {
       const { targetSelector, delta } = body;
       if (!targetSelector || !Number.isFinite(delta) || delta === 0) return block.scriptText;
-      return shiftPositionsInScript(block.scriptText, targetSelector, delta);
+      return shiftPositionsInScript(block.scriptText, targetSelector, delta, block.root);
     }
     case "shift-positions-batch": {
       let script = block.scriptText;
       for (const s of body.shifts) {
         if (!s.targetSelector || !Number.isFinite(s.delta) || s.delta === 0) continue;
-        script = shiftPositionsInScript(script, s.targetSelector, s.delta);
+        script = shiftPositionsInScript(script, s.targetSelector, s.delta, block.root);
       }
       return script;
     }
@@ -1737,6 +1739,7 @@ function executeGsapMutationAcorn(
         oldDuration,
         newStart,
         newDuration,
+        block.root,
       );
     }
     default:
@@ -2079,14 +2082,14 @@ async function executeGsapMutationRecast(
       const { targetSelector, delta } = body;
       if (!targetSelector || !Number.isFinite(delta) || delta === 0) return block.scriptText;
       const { shiftPositionsInScript } = parser;
-      return shiftPositionsInScript(block.scriptText, targetSelector, delta);
+      return shiftPositionsInScript(block.scriptText, targetSelector, delta, block.root);
     }
     case "shift-positions-batch": {
       const { shiftPositionsInScript } = parser;
       let script = block.scriptText;
       for (const s of body.shifts) {
         if (!s.targetSelector || !Number.isFinite(s.delta) || s.delta === 0) continue;
-        script = shiftPositionsInScript(script, s.targetSelector, s.delta);
+        script = shiftPositionsInScript(script, s.targetSelector, s.delta, block.root);
       }
       return script;
     }
@@ -2111,6 +2114,7 @@ async function executeGsapMutationRecast(
         oldDuration,
         newStart,
         newDuration,
+        block.root,
       );
     }
     default:

@@ -11,6 +11,7 @@
  * Recast remains the default; acorn runs only when the flag is enabled.
  */
 import { describe, expect, it } from "vitest";
+import { parseHTML } from "linkedom";
 import {
   parseGsapScript,
   removeAllKeyframesFromScript as removeAllRecast,
@@ -1972,4 +1973,58 @@ tl.to("#el", { y: 50, duration: 1 }, "+=0.5");`;
   it("no-op when newDuration <= 0", () => {
     expect(scaleAcorn(POSITIONS_MULTI, "#hero", 0, 1, 2, 0)).toBe(POSITIONS_MULTI);
   });
+});
+
+describe("shift/scalePositionsInScript carry the clip's inner tweens", () => {
+  const { document } = parseHTML(`<html><body>
+<div id="scene" data-start="1" data-duration="4">
+  <h1 class="title">Hi</h1>
+  <p id="child" class="inner">Kid</p>
+  <div id="nested" data-start="2" data-duration="1"><span id="deep">x</span></div>
+</div>
+<div id="sibling" class="title">Out</div>
+</body></html>`);
+  const script = `const tl = gsap.timeline({ paused: true });
+tl.from("#scene", { opacity: 0, duration: 1 }, 1);
+tl.from("#scene h1", { y: 20, duration: 1 }, 1.5);
+tl.to("#child", { x: 10, duration: 1 }, 2);
+tl.to(["#child", "#scene h1"], { opacity: 0.5, duration: 1 }, 3);
+tl.to(".inner", { scale: 2, duration: 1 }, 3.5);
+tl.to("#sibling", { x: 5, duration: 1 }, 2);
+tl.to(".title", { color: "red", duration: 1 }, 2.5);
+tl.to("#deep", { y: 5, duration: 0.5 }, 2);`;
+  const timings = (out: string) =>
+    parseGsapScriptAcorn(out).animations.map((a) => [a.targetSelector, a.position, a.duration]);
+  const writers = [
+    ["acorn", shiftAcorn, scaleAcorn],
+    ["recast", shiftRecast, scaleRecast],
+  ] as const;
+
+  for (const [name, shift, scale] of writers) {
+    it(`${name}: a shift moves the clip and its descendants, never outside or nested clips`, () => {
+      expect(timings(shift(script, "#scene", 2, document))).toEqual([
+        ["#scene", 3, 1],
+        ["#scene h1", 3.5, 1],
+        ["#child", 4, 1],
+        ["#child, #scene h1", 5, 1],
+        [".inner", 5.5, 1],
+        ["#sibling", 2, 1],
+        [".title", 2.5, 1],
+        ["#deep", 2, 0.5],
+      ]);
+    });
+
+    it(`${name}: a scale retimes the clip and its descendants, never outside or nested clips`, () => {
+      expect(timings(scale(script, "#scene", 1, 4, 1, 8, document))).toEqual([
+        ["#scene", 1, 2],
+        ["#scene h1", 2, 2],
+        ["#child", 3, 2],
+        ["#child, #scene h1", 5, 2],
+        [".inner", 6, 2],
+        ["#sibling", 2, 1],
+        [".title", 2.5, 1],
+        ["#deep", 2, 0.5],
+      ]);
+    });
+  }
 });

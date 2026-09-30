@@ -51,6 +51,7 @@ export {
 } from "./gsapConstants";
 import { classifyPropertyGroup, classifyTweenPropertyGroup } from "./gsapConstants";
 import type { PropertyGroupName } from "./gsapConstants";
+import { clipTweenMatcher } from "./clipTweens";
 import {
   findObjectArrayKeyframeIndex,
   getCompatibleObjectArrayKeyframeTiming,
@@ -1543,7 +1544,9 @@ export function shiftPositionsInScript(
   script: string,
   targetSelector: string,
   delta: number,
+  root?: ParentNode,
 ): string {
+  const carries = clipTweenMatcher(targetSelector, root);
   let parsed: ParsedGsapAst;
   try {
     parsed = parseGsapAst(script);
@@ -1553,7 +1556,7 @@ export function shiftPositionsInScript(
   }
   let changed = false;
   for (const entry of parsed.located) {
-    if (entry.animation.targetSelector !== targetSelector) continue;
+    if (!carries(entry.animation.targetSelector)) continue;
     if (typeof entry.animation.position !== "number") continue;
     const newPos = Math.max(0, Math.round((entry.animation.position + delta) * 1000) / 1000);
     applyUpdatesToCall(entry.call, { position: newPos });
@@ -1569,9 +1572,11 @@ export function scalePositionsInScript(
   oldDuration: number,
   newStart: number,
   newDuration: number,
+  root?: ParentNode,
 ): string {
   if (oldDuration <= 0 || newDuration <= 0) return script;
   const ratio = newDuration / oldDuration;
+  const carries = clipTweenMatcher(targetSelector, root);
   let parsed: ParsedGsapAst;
   try {
     parsed = parseGsapAst(script);
@@ -1581,7 +1586,7 @@ export function scalePositionsInScript(
   }
   let changed = false;
   for (const entry of parsed.located) {
-    if (entry.animation.targetSelector !== targetSelector) continue;
+    if (!carries(entry.animation.targetSelector)) continue;
     if (typeof entry.animation.position !== "number") continue;
     const newPos = Math.max(
       0,

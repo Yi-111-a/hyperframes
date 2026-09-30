@@ -32,6 +32,7 @@ import {
 } from "./gsapObjectArrayTiming.js";
 import type { SplitAnimationsOptions, SplitAnimationsResult } from "./gsapSerialize.js";
 import * as acornWalk from "acorn-walk";
+import { clipTweenMatcher } from "./clipTweens.js";
 
 // acorn ESTree nodes are structurally untyped here; mirror gsapParserAcorn.ts /
 // gsapInline.ts rather than re-deriving the full ESTree union for every access.
@@ -445,7 +446,7 @@ function overwritePosition(ms: MagicString, call: TweenCallInfo, position: numbe
 }
 
 /**
- * Shift every tween targeting `targetSelector` by `delta` seconds (clamped ≥0),
+ * Shift every tween the clip at `targetSelector` carries by `delta` seconds (clamped ≥0),
  * rewriting each call's position argument. Mirrors recast's shiftPositionsInScript
  * (used by timeline clip-move to keep GSAP positions in sync with the clip start).
  */
@@ -453,13 +454,15 @@ export function shiftPositionsInScript(
   script: string,
   targetSelector: string,
   delta: number,
+  root?: ParentNode,
 ): string {
   const parsed = parseGsapScriptAcornForWrite(script);
   if (!parsed) return script;
+  const carries = clipTweenMatcher(targetSelector, root);
   const ms = new MagicString(script);
   let changed = false;
   for (const entry of parsed.located) {
-    if (entry.animation.targetSelector !== targetSelector) continue;
+    if (!carries(entry.animation.targetSelector)) continue;
     if (typeof entry.animation.position !== "number") continue;
     const newPos = Math.max(0, Math.round((entry.animation.position + delta) * 1000) / 1000);
     overwritePosition(ms, entry.call, newPos);
@@ -469,7 +472,7 @@ export function shiftPositionsInScript(
 }
 
 /**
- * Linearly remap every tween targeting `targetSelector` from the old clip
+ * Linearly remap every tween the clip at `targetSelector` carries from the old clip
  * [oldStart, oldDuration] onto the new [newStart, newDuration] (position and,
  * when present, duration scaled by the duration ratio). Mirrors recast's
  * scalePositionsInScript (used by timeline clip-resize).
@@ -481,15 +484,17 @@ export function scalePositionsInScript(
   oldDuration: number,
   newStart: number,
   newDuration: number,
+  root?: ParentNode,
 ): string {
   if (oldDuration <= 0 || newDuration <= 0) return script;
   const ratio = newDuration / oldDuration;
   const parsed = parseGsapScriptAcornForWrite(script);
   if (!parsed) return script;
+  const carries = clipTweenMatcher(targetSelector, root);
   const ms = new MagicString(script);
   let changed = false;
   for (const entry of parsed.located) {
-    if (entry.animation.targetSelector !== targetSelector) continue;
+    if (!carries(entry.animation.targetSelector)) continue;
     if (typeof entry.animation.position !== "number") continue;
     const newPos = Math.max(
       0,
