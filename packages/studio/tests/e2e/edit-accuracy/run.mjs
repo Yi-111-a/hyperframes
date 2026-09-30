@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 /**
  * Edit accuracy benchmark: real pointer and keyboard gestures in the built CLI Studio, scored in composition px.
- * Build the CLI first. On a shared box, hold the suite lock:
- *   flock /tmp/hf-suite.lock bun run --cwd packages/studio test:edit-accuracy -- --grid full --jobs 4
+ * Build the CLI first (core, parsers, lint and studio-server included), then:
+ *   bun run --cwd packages/studio test:edit-accuracy -- --grid full --jobs 4
  * Flags: --grid full|pr  --shard i/n  --jobs N  --filter <regex on case id>  --out <dir>  --port <first>  --cli <cli.js>
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
