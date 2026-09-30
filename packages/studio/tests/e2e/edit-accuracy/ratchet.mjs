@@ -28,6 +28,7 @@ const summary = (e) =>
   e.error ? "error" : `${GATED_PX.map((m) => `${m} ${e[m] ?? "-"}`).join(", ")}, undo ${e.undo}`;
 
 /** Every run of every case: each shard's run plus the re-runs of its regressions. */
+// fallow-ignore-next-line complexity
 export function gate(base, head, runs) {
   const seen = new Map();
   for (const r of runs) seen.set(r.id, [...(seen.get(r.id) ?? []), entry(r)]);
@@ -108,6 +109,7 @@ const readBaseline = (path) => {
   }
 };
 
+// fallow-ignore-next-line complexity
 function main([command, basePath, ...rest]) {
   const base = readBaseline(basePath);
   if (command === "regressions") {
@@ -116,6 +118,7 @@ function main([command, basePath, ...rest]) {
   }
   const [headPath, out, ...resultPaths] = rest;
   const runs = resultPaths.map((p) => readJson(p));
+  if (!runs.length) throw new Error("no results.json from any shard");
   const g = gate(
     base,
     readBaseline(headPath),
