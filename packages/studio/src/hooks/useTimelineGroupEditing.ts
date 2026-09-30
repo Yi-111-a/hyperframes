@@ -24,11 +24,13 @@ import { playbackStartAttributeForElement } from "../player/lib/timelineElementH
 import {
   captureDurationRollback,
   finishGroupTimingGsapFallback,
+  sdkTimingGsapSync,
   readFileContent,
   scaleGsapPositions,
   shiftGsapPositions,
   syncPreviewContentDuration,
 } from "./timelineTimingSync";
+import type { GsapMutationStatus } from "./gsapMutationClient";
 import { getStudioSaveErrorMessage } from "../utils/studioSaveDiagnostics";
 
 export interface TimelineGroupMoveChange {
@@ -186,8 +188,8 @@ export function useTimelineGroupEditing({
 
   // Shared SDK fast path for group move/resize: eligible when nothing needs the
   // server (no root-duration growth, one shared file, every change SDK-addressable
-  // and `eligible` per the caller's own gate). Returns whether the SDK handled it;
-  // false → caller falls through to the server batch persist.
+  // and `eligible` per the caller's own gate). Returns the SDK's GSAP sync when it
+  // handled the edit; null → caller falls through to the server batch persist.
   const trySdkBatchPersist = useCallback(
     async (input: {
       changes: readonly { element: TimelineElement }[];
@@ -200,14 +202,14 @@ export function useTimelineGroupEditing({
       label: string;
       coalesceKey: string;
       coalesceMs?: number;
-    }): Promise<boolean> => {
+    }): Promise<GsapMutationStatus | null> => {
       const sharedPath = allChangesSharePath(input.changes, activeCompPath);
       const canUseSdk =
         !input.needsExtension &&
         sharedPath !== null &&
         input.eligible &&
         input.sdkChanges.every((change) => change !== null);
-      if (!canUseSdk) return false;
+      if (!canUseSdk) return null;
       const result = await sdkTimingBatchPersist(
         input.sdkChanges.filter((change): change is NonNullable<typeof change> => change !== null),
         sharedPath,
@@ -227,7 +229,7 @@ export function useTimelineGroupEditing({
           skipRefresh: true,
         },
       );
-      return cutoverCommittedOrThrow(result);
+      return cutoverCommittedOrThrow(result) ? sdkTimingGsapSync(result) : null;
     },
     [
       activeCompPath,
@@ -289,7 +291,7 @@ export function useTimelineGroupEditing({
       const label = options?.label ?? "Move timeline clips";
       return enqueueGroupOperation(label, async (projectId) => {
         await options?.beforeTiming;
-        const handledBySdk = await trySdkBatchPersist({
+        const sdkGsap = await trySdkBatchPersist({
           changes,
           sdkChanges: toSdkTimingChanges(changes, (change) => ({
             start: toAuthoredStart(change.element, change.start),
@@ -300,7 +302,7 @@ export function useTimelineGroupEditing({
           coalesceKey,
           coalesceMs,
         });
-        if (!handledBySdk) {
+        if (!sdkGsap) {
           await persistServerBatch(
             projectId,
             label,
@@ -339,6 +341,7 @@ export function useTimelineGroupEditing({
             writeProjectFile,
             activeCompPath,
             changes,
+            sdkGsap,
             resolveChangePath: (element) => targetPathFor(element, activeCompPath),
             mutateChange: (change, changePath) => {
               const delta = change.start - change.element.start;
@@ -408,7 +411,7 @@ export function useTimelineGroupEditing({
       const coalesceMs = options?.coalesceMs;
       return enqueueGroupOperation("Resize timeline clips", async (projectId) => {
         await options?.beforeTiming;
-        const handledBySdk = await trySdkBatchPersist({
+        const sdkGsap = await trySdkBatchPersist({
           changes,
           sdkChanges: toSdkTimingChanges(changes, (change) => ({
             start: toAuthoredStart(change.element, change.start),
@@ -420,7 +423,7 @@ export function useTimelineGroupEditing({
           coalesceKey,
           coalesceMs,
         });
-        if (!handledBySdk) {
+        if (!sdkGsap) {
           await persistServerBatch(
             projectId,
             "Resize timeline clips",
@@ -451,6 +454,7 @@ export function useTimelineGroupEditing({
             writeProjectFile,
             activeCompPath,
             changes,
+            sdkGsap,
             resolveChangePath: (element) => targetPathFor(element, activeCompPath),
             mutateChange: (change, changePath) => {
               const domId = change.element.domId;

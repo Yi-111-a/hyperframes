@@ -19,6 +19,7 @@ import { playbackStartAttributeForElement } from "../player/lib/timelineElementH
 import {
   captureDurationRollback,
   finishClipTimingFallback,
+  sdkTimingGsapSync,
   readFileContent,
   syncPreviewContentDuration,
 } from "./timelineTimingSync";
@@ -229,10 +230,8 @@ export function useTimelineEditing({
           );
         };
         const coalesceKey = `timeline-move:${element.hfId ?? element.id}`;
-        const finishMoveGsapSync = () =>
-          // Every timing writer converges the same GSAP positions after its
-          // durable clip-start commit. The SDK owns the attribute write; this
-          // sync owns only the dependent animation rewrite and preview refresh.
+        const finishMoveGsapSync = (sdkGsap?: ReturnType<typeof sdkTimingGsapSync>) =>
+          // One GSAP sync per edit: the SDK commit's own (sdkGsap), else the server rewrite here.
           finishClipTimingFallback({
             iframe: previewIframeRef.current,
             reloadPreview,
@@ -244,15 +243,15 @@ export function useTimelineEditing({
             recordEdit,
             writeProjectFile,
             edit: { kind: "shift", delta: updates.start - element.start },
+            sdkGsap,
           }).finally(() => invalidateGsapCache?.());
         const moveFallback = () =>
-          enqueueEdit(element, "Move timeline clip", buildMovePatches, coalesceKey).then(
-            finishMoveGsapSync,
+          enqueueEdit(element, "Move timeline clip", buildMovePatches, coalesceKey).then(() =>
+            finishMoveGsapSync(),
           );
         return reorderDone
           .then(() => {
-            // The SDK setTiming path writes start only — a lane change must take
-            // the fallback, whose patch builder writes data-track-index too.
+            // SDK setTiming writes start only; a lane change needs the fallback's track patch.
             if (sdkSession && element.hfId && !needsExtension && !trackChanged) {
               return sdkTimingPersist(
                 element.hfId,
@@ -272,7 +271,7 @@ export function useTimelineEditing({
                 { label: "Move timeline clip", coalesceKey, skipRefresh: true },
               ).then((result) => {
                 if (!cutoverCommittedOrThrow(result)) return moveFallback();
-                return finishMoveGsapSync();
+                return finishMoveGsapSync(sdkTimingGsapSync(result));
               });
             }
             return moveFallback();
@@ -337,7 +336,7 @@ export function useTimelineEditing({
       // script (timing-only resize) — same no-flash path as move; full reload is
       // the fallback.
       const coalesceKey = `timeline-resize:${element.hfId ?? element.id}`;
-      const finishResizeGsapSync = () =>
+      const finishResizeGsapSync = (sdkGsap?: ReturnType<typeof sdkTimingGsapSync>) =>
         finishClipTimingFallback({
           iframe: previewIframeRef.current,
           reloadPreview,
@@ -353,10 +352,11 @@ export function useTimelineEditing({
             from: { start: toCompositionTime(element, element.start), duration: element.duration },
             to: { start: toCompositionTime(element, updates.start), duration: updates.duration },
           },
+          sdkGsap,
         }).finally(() => invalidateGsapCache?.());
       const resizeFallback = () =>
-        enqueueEdit(element, "Resize timeline clip", buildResizePatches, coalesceKey).then(
-          finishResizeGsapSync,
+        enqueueEdit(element, "Resize timeline clip", buildResizePatches, coalesceKey).then(() =>
+          finishResizeGsapSync(),
         );
       const persistDone =
         sdkSession && element.hfId && !hasPbsAdjustment && !needsExtension
@@ -378,7 +378,7 @@ export function useTimelineEditing({
               { label: "Resize timeline clip", coalesceKey, skipRefresh: true },
             ).then((result) => {
               if (!cutoverCommittedOrThrow(result)) return resizeFallback();
-              return finishResizeGsapSync();
+              return finishResizeGsapSync(sdkTimingGsapSync(result));
             })
           : resizeFallback();
       return persistDone.catch((error) => {

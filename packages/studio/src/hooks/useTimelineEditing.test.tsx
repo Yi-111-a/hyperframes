@@ -21,6 +21,10 @@ import {
   resolveTimelineGroupResizeChanges,
 } from "../player/components/timelineGroupEditing";
 import { createRuntimeStartTimeResolver } from "@hyperframes/core/runtime/start-resolver";
+import {
+  scalePositionsInScript,
+  shiftPositionsInScript,
+} from "@hyperframes/core/gsap-writer-acorn";
 
 vi.mock("../components/editor/manualEditingAvailability", async (importOriginal) => {
   const actual =
@@ -134,6 +138,7 @@ function renderTimelineEditingHook(input: {
   invalidateGsapCache?: () => void;
   showToast?: (message: string, kind?: string) => void;
   canEdit?: NonNullable<Parameters<typeof useTimelineEditing>[0]["canEdit"]>;
+  activeCompPath?: string;
 }): {
   move: ReturnType<typeof useTimelineEditing>["handleTimelineElementMove"];
   resize: ReturnType<typeof useTimelineEditing>["handleTimelineElementResize"];
@@ -166,7 +171,7 @@ function renderTimelineEditingHook(input: {
     commitRef.current = input.onZIndexCommit;
     const hook = useTimelineEditing({
       projectId: input.projectId ?? null,
-      activeCompPath: "index.html",
+      activeCompPath: input.activeCompPath ?? "index.html",
       timelineElements: input.timelineElements,
       showToast: input.showToast ?? vi.fn(),
       writeProjectFile: input.writeProjectFile ?? vi.fn(),
@@ -370,39 +375,6 @@ function setupSingleClipHarness(options?: {
     fetchMock,
     ...hook,
   };
-}
-
-const SDK_KEYFRAMED_SOURCE = [
-  `<div data-hf-id="hf-stage" data-hf-root data-composition-id="main" data-duration="10">`,
-  `  <div id="clip" data-hf-id="hf-clip" data-start="1" data-duration="2"></div>`,
-  `</div>`,
-  `<script>`,
-  `const tl = gsap.timeline({ paused: true });`,
-  `tl.to("#clip", { keyframes: [{ x: 0 }, { x: 100 }], duration: 2 }, 1);`,
-  `window.__timelines = [tl];`,
-  `</script>`,
-].join("\n");
-
-async function setupSdkKeyframedClipHarness() {
-  const iframe = createPreviewIframe([{ id: "clip", track: 0 }]);
-  const clip = timelineElement({ id: "clip", track: 0, zIndex: 0, start: 1 });
-  const sdkSession = await openComposition(SDK_KEYFRAMED_SOURCE);
-  const writeProjectFile = vi.fn<(...args: unknown[]) => Promise<void>>(async () => {});
-  const invalidateGsapCache = vi.fn();
-  const fetchMock = stubProjectFetch(SDK_KEYFRAMED_SOURCE);
-  usePlayerStore.getState().setDuration(10);
-  const hook = renderTimelineEditingHook({
-    timelineElements: [clip],
-    iframe,
-    onZIndexCommit: vi.fn().mockResolvedValue(undefined),
-    projectId: "p1",
-    writeProjectFile,
-    recordEdit: vi.fn(async () => {}),
-    sdkSession,
-    publishSdkSession: vi.fn<TimelinePublishSdkSession>(() => "published"),
-    invalidateGsapCache,
-  });
-  return { clip, fetchMock, hook, invalidateGsapCache, writeProjectFile };
 }
 
 /** Assert a lane write landed in both the live iframe DOM and the persisted file. */
@@ -830,58 +802,6 @@ describe("useTimelineEditing timeline z-index reorder", () => {
     h.unmount();
   });
 
-  it("shifts authored GSAP positions after an SDK-backed clip move commits", async () => {
-    const { clip, fetchMock, hook, invalidateGsapCache, writeProjectFile } =
-      await setupSdkKeyframedClipHarness();
-
-    await act(async () => {
-      await hook.move(clip, { start: 2.25, track: clip.track });
-    });
-
-    expect(writeProjectFile.mock.calls[0]?.[1]).toContain('data-start="2.25"');
-    const mutationCall = fetchMock.mock.calls.find((call) =>
-      requestUrl(call[0]).includes("/gsap-mutations/"),
-    );
-    expect(mutationCall).toBeDefined();
-    const init = mutationCall?.[1] as RequestInit | undefined;
-    expect(JSON.parse(String(init?.body))).toEqual({
-      type: "shift-positions",
-      targetSelector: "#clip",
-      delta: 1.25,
-    });
-    expect(invalidateGsapCache).toHaveBeenCalledTimes(1);
-
-    hook.unmount();
-  });
-
-  it("scales authored GSAP positions after an SDK-backed clip resize commits", async () => {
-    const { clip, fetchMock, hook, invalidateGsapCache, writeProjectFile } =
-      await setupSdkKeyframedClipHarness();
-
-    await act(async () => {
-      await hook.resize(clip, { start: 2, duration: 4, playbackStart: undefined });
-    });
-
-    expect(writeProjectFile.mock.calls[0]?.[1]).toContain('data-start="2"');
-    expect(writeProjectFile.mock.calls[0]?.[1]).toContain('data-duration="4"');
-    const mutationCall = fetchMock.mock.calls.find((call) =>
-      requestUrl(call[0]).includes("/gsap-mutations/"),
-    );
-    expect(mutationCall).toBeDefined();
-    const init = mutationCall?.[1] as RequestInit | undefined;
-    expect(JSON.parse(String(init?.body))).toEqual({
-      type: "scale-positions",
-      targetSelector: "#clip",
-      oldStart: 1,
-      oldDuration: 2,
-      newStart: 2,
-      newDuration: 4,
-    });
-    expect(invalidateGsapCache).toHaveBeenCalledTimes(1);
-
-    hook.unmount();
-  });
-
   it("persists a vertical-only lane move (start unchanged) through the single-element fallback", async () => {
     // Regression: `if (!startChanged) return` ran BEFORE the file persist, so a
     // pure lane change routed through onMoveElement (no onMoveElements wired)
@@ -991,55 +911,6 @@ describe("useTimelineEditing timeline z-index reorder", () => {
     expect(Object.keys(recordEdit.mock.calls[0]![0].files)).toEqual(["index.html"]);
 
     unmount();
-  });
-
-  it("shifts every keyed clip and invalidates the cache after an SDK-backed group move", async () => {
-    const source = [
-      `<div data-hf-id="hf-stage" data-hf-root data-duration="10">`,
-      `  <div id="a" data-hf-id="hf-a" data-start="0" data-duration="1"></div>`,
-      `  <div id="b" data-hf-id="hf-b" data-start="1" data-duration="1"></div>`,
-      `</div>`,
-      `<script>`,
-      `const tl = gsap.timeline({ paused: true });`,
-      `tl.to("#a", { keyframes: [{ x: 0 }, { x: 100 }], duration: 1 }, 0);`,
-      `tl.to("#b", { keyframes: [{ x: 0 }, { x: 100 }], duration: 1 }, 1);`,
-      `window.__timelines = [tl];`,
-      `</script>`,
-    ].join("\n");
-    const { iframe, a, b } = makeTwoClipPair();
-    const sdkSession = await openComposition(source);
-    const fetchMock = stubProjectFetch(source);
-    const invalidateGsapCache = vi.fn();
-    usePlayerStore.getState().setDuration(10);
-    const hook = renderTimelineEditingHook({
-      timelineElements: [a, b],
-      iframe,
-      onZIndexCommit: vi.fn().mockResolvedValue(undefined),
-      projectId: "p1",
-      writeProjectFile: vi.fn<(...args: unknown[]) => Promise<void>>(async () => {}),
-      recordEdit: vi.fn(async () => {}),
-      sdkSession,
-      publishSdkSession: vi.fn<TimelinePublishSdkSession>(() => "published"),
-      invalidateGsapCache,
-    });
-
-    await act(async () => {
-      await hook.groupMove([
-        { element: a, start: 1 },
-        { element: b, start: 2 },
-      ]);
-    });
-
-    const mutations = fetchMock.mock.calls
-      .filter((call) => requestUrl(call[0]).includes("/gsap-mutations/"))
-      .map((call) => JSON.parse(String((call[1] as RequestInit | undefined)?.body)));
-    expect(mutations).toEqual([
-      { type: "shift-positions", targetSelector: "#a", delta: 1 },
-      { type: "shift-positions", targetSelector: "#b", delta: 1 },
-    ]);
-    expect(invalidateGsapCache).toHaveBeenCalledTimes(1);
-
-    hook.unmount();
   });
 
   it("partitions a group move by source file while keeping one undo entry", async () => {
@@ -2352,4 +2223,165 @@ describe("useTimelineEditing: nested rows write composition-local starts", () =>
     );
     hook.unmount();
   });
+});
+
+describe("clip timing edits sync GSAP exactly once", () => {
+  const SCENE_PATH = "compositions/scene.html";
+  const SCENE_SOURCE = [
+    `<div data-hf-id="hf-stage" data-hf-root data-composition-id="scene" data-duration="10">`,
+    `  <div id="scene" data-hf-id="hf-scene" data-start="1" data-duration="4"><h1 data-hf-id="hf-title">Hi</h1></div>`,
+    `  <div id="side" data-hf-id="hf-side" data-start="0" data-duration="8"></div>`,
+    `</div>`,
+    `<script>`,
+    `const tl = gsap.timeline({ paused: true });`,
+    `tl.to("#scene", { x: 1, duration: 1 }, 1);`,
+    `tl.from("#scene h1", { y: 20, duration: 1 }, 1.5);`,
+    `tl.to("#side", { x: 5, duration: 1 }, 2);`,
+    `window.__timelines = [tl];`,
+    `</script>`,
+  ].join("\n");
+
+  // A project whose files live in memory, with the GSAP route running the real server writer on them.
+  function stubProjectFiles(initial: Record<string, string>) {
+    const files = { ...initial };
+    const pathAfter = (url: string, marker: string) => decodeURIComponent(url.split(marker)[1]!);
+    const applyServerMutation = (path: string, body: Record<string, unknown>) => {
+      const before = files[path]!;
+      const root = new DOMParser().parseFromString(before, "text/html");
+      const script = [...root.querySelectorAll("script")].find((s) =>
+        s.textContent?.includes("gsap.timeline"),
+      )!;
+      const old = script.textContent!;
+      const next =
+        body.type === "shift-positions"
+          ? shiftPositionsInScript(old, String(body.targetSelector), Number(body.delta), root)
+          : scalePositionsInScript(
+              old,
+              String(body.targetSelector),
+              Number(body.oldStart),
+              Number(body.oldDuration),
+              Number(body.newStart),
+              Number(body.newDuration),
+              root,
+            );
+      const after = before.replace(old, next);
+      files[path] = after;
+      return {
+        ok: true,
+        mutated: after !== before,
+        changed: after !== before,
+        scriptText: next,
+        before,
+        after,
+      };
+    };
+    const fetchMock = vi.fn(
+      async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        const url = requestUrl(input);
+        if (url.includes("/gsap-mutation-capabilities"))
+          return jsonResponse({ atomicOwnershipPairs: true });
+        if (url.includes("/gsap-mutations/")) {
+          return jsonResponse(
+            applyServerMutation(pathAfter(url, "/gsap-mutations/"), JSON.parse(String(init?.body))),
+          );
+        }
+        if (url.includes("/files/"))
+          return jsonResponse({ content: files[pathAfter(url, "/files/")] });
+        throw new Error(`Unexpected fetch: ${url}`);
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const writeProjectFile = vi.fn(async (path: string, content: string) => {
+      files[path] = content;
+    });
+    return { files, fetchMock, writeProjectFile };
+  }
+
+  async function setupScene(withSdk: boolean) {
+    const project = stubProjectFiles({ [SCENE_PATH]: SCENE_SOURCE });
+    const iframe = createPreviewIframe([
+      { id: "scene", track: 0 },
+      { id: "side", track: 1 },
+    ]);
+    const scene = timelineElement({
+      id: "scene",
+      track: 0,
+      zIndex: 0,
+      start: 1,
+      duration: 4,
+      sourceFile: SCENE_PATH,
+    });
+    const side = timelineElement({
+      id: "side",
+      track: 1,
+      zIndex: 0,
+      start: 0,
+      duration: 8,
+      sourceFile: SCENE_PATH,
+    });
+    usePlayerStore.getState().setDuration(10);
+    const hook = renderTimelineEditingHook({
+      timelineElements: [scene, side],
+      iframe,
+      onZIndexCommit: vi.fn().mockResolvedValue(undefined),
+      projectId: "p1",
+      activeCompPath: SCENE_PATH,
+      writeProjectFile: project.writeProjectFile,
+      recordEdit: vi.fn(async () => {}),
+      sdkSession: withSdk ? await openComposition(SCENE_SOURCE) : undefined,
+      publishSdkSession: vi.fn<TimelinePublishSdkSession>(() => "published"),
+    });
+    const tweens = () =>
+      project.files[SCENE_PATH]!.split("\n").filter((line) => line.startsWith("tl."));
+    return { ...project, hook, scene, side, tweens };
+  }
+
+  for (const withSdk of [true, false]) {
+    const via = withSdk ? "through the SDK" : "through the server (no SDK session)";
+
+    it(`a move ${via} lands each tween once`, async () => {
+      const h = await setupScene(withSdk);
+      await act(async () => {
+        await h.hook.move(h.scene, { start: 3, track: h.scene.track });
+        await flushAsyncWork();
+      });
+      expect(h.tweens()).toEqual([
+        `tl.to("#scene", { x: 1, duration: 1 }, 3);`,
+        `tl.from("#scene h1", { y: 20, duration: 1 }, 3.5);`,
+        `tl.to("#side", { x: 5, duration: 1 }, 2);`,
+      ]);
+      h.hook.unmount();
+    });
+
+    it(`a resize ${via} scales each tween once`, async () => {
+      const h = await setupScene(withSdk);
+      await act(async () => {
+        await h.hook.resize(h.scene, { start: 1, duration: 8, playbackStart: undefined });
+        await flushAsyncWork();
+      });
+      expect(h.tweens()).toEqual([
+        `tl.to("#scene", { x: 1, duration: 2 }, 1);`,
+        `tl.from("#scene h1", { y: 20, duration: 2 }, 2);`,
+        `tl.to("#side", { x: 5, duration: 1 }, 2);`,
+      ]);
+      h.hook.unmount();
+    });
+
+    it(`a group move ${via} lands each tween once`, async () => {
+      const h = await setupScene(withSdk);
+      await act(async () => {
+        await h.hook.groupMove([
+          { element: h.scene, start: 3 },
+          { element: h.side, start: 1 },
+        ]);
+        await flushAsyncWork();
+      });
+      expect(h.tweens()).toEqual([
+        `tl.to("#scene", { x: 1, duration: 1 }, 3);`,
+        `tl.from("#scene h1", { y: 20, duration: 1 }, 3.5);`,
+        `tl.to("#side", { x: 5, duration: 1 }, 3);`,
+      ]);
+      h.hook.unmount();
+    });
+  }
 });

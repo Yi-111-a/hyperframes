@@ -3,7 +3,11 @@
 // edit's undo history, and swapping the rewritten script into the live preview
 // without a full iframe reload when possible.
 import { type TimelineElement, usePlayerStore } from "../player/store/playerStore";
-import { applySoftReload, applySoftReloadFinalization } from "../utils/gsapSoftReload";
+import {
+  applySoftReload,
+  applySoftReloadFinalization,
+  extractGsapScriptText,
+} from "../utils/gsapSoftReload";
 import { furthestClipEndFromDocument } from "../player/lib/timelineElementHelpers";
 import type { RecordEditInput } from "../utils/studioFileHistory";
 import { patchDocumentRootDuration } from "./timelineEditingGsap";
@@ -15,6 +19,7 @@ import {
   rollbackOwnedMutation,
   type GsapMutationStatus,
 } from "./gsapMutationClient";
+import type { CutoverResult } from "../utils/sdkEditTransaction";
 import {
   serializeStudioFileMutations,
   type StudioProjectFileWriter,
@@ -365,6 +370,13 @@ export async function scaleGsapPositions(
   );
 }
 
+/** A committed SDK timing write already moved the clip's tweens (setTiming syncs GSAP); this is that sync. */
+export function sdkTimingGsapSync(
+  result: Extract<CutoverResult, { status: "committed" }>,
+): GsapMutationStatus {
+  return { mutated: true, scriptText: extractGsapScriptText(result.after) };
+}
+
 /** Timing delta a single-clip edit applies to its GSAP tweens. */
 export type SingleClipGsapEdit =
   | { kind: "shift"; delta: number }
@@ -395,8 +407,9 @@ export function finishClipTimingFallback(input: {
   recordEdit: (edit: RecordEditInput) => Promise<void>;
   writeProjectFile: StudioProjectFileWriter;
   edit: SingleClipGsapEdit;
+  sdkGsap?: GsapMutationStatus;
 }): Promise<void> {
-  const { projectId, targetPath, domId, edit } = input;
+  const { projectId, targetPath, domId, edit, sdkGsap } = input;
   const timingChanged =
     edit.kind === "shift"
       ? edit.delta !== 0
@@ -418,8 +431,9 @@ export function finishClipTimingFallback(input: {
   return finishTimelineTimingFallback({
     iframe: input.iframe,
     reloadPreview: input.reloadPreview,
-    gsapMutation:
-      timingChanged && domId && projectId
+    gsapMutation: sdkGsap
+      ? () => Promise.resolve(sdkGsap)
+      : timingChanged && domId && projectId
         ? () =>
             foldGsapMutationIntoHistory({
               writeFile: input.writeProjectFile,
@@ -463,12 +477,24 @@ export async function finishGroupTimingGsapFallback<C extends { element: Timelin
   resolveChangePath: (element: TimelineElement) => string;
   /** Per-change GSAP mutation; return null to skip a change with no timing delta. */
   mutateChange: (change: C, changePath: string) => Promise<GsapMutationStatus> | null;
+  sdkGsap?: GsapMutationStatus | null;
 }): Promise<void> {
   const activePath = input.activeCompPath || "index.html";
   const otherFileChanged = input.changes.some(
     (change) => input.resolveChangePath(change.element) !== activePath,
   );
   const onGsapError = (err: unknown) => console.error(`[Timeline] ${input.errorLabel}`, err);
+  const { sdkGsap } = input;
+  if (sdkGsap) {
+    await finishTimelineTimingFallback({
+      iframe: input.iframe,
+      reloadPreview: input.reloadPreview,
+      gsapMutation: () => Promise.resolve(sdkGsap),
+      onGsapError,
+      rebindWhenUnmutated: !otherFileChanged,
+    });
+    return;
+  }
   await finishTimelineTimingFallback({
     iframe: input.iframe,
     reloadPreview: input.reloadPreview,
