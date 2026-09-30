@@ -474,7 +474,7 @@ export function getGsapScripts(document: Document): string[] {
     .filter(isGsapScriptText);
 }
 
-function findGsapScriptElement(document: Document): Element | null {
+export function findGsapScriptElement(document: Document): Element | null {
   for (const script of findScriptElementsDeep(document)) {
     const text = script.textContent ?? "";
     if (isGsapScriptText(text)) return script;

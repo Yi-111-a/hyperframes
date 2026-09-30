@@ -77,6 +77,7 @@ import {
   scalePositionsInScript,
   dedupePositionWritesInScript,
   syncPositionHoldsBeforeKeyframes,
+  clipQueryRoot,
 } from "@hyperframes/parsers/gsap-writer-acorn";
 import {
   removeElementFromHtml,
@@ -696,7 +697,7 @@ function extractGsapScriptBlock(html: string): {
       return {
         scriptText: content,
         document,
-        root: script.closest("template") ?? document,
+        root: clipQueryRoot(script),
         replaceScript(newText: string): string {
           script.textContent = newText;
           return document.toString();

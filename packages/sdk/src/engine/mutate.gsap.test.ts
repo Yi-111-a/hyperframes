@@ -1089,6 +1089,7 @@ describe("handleSetTiming GSAP sync (CF2 #15/#16)", () => {
   <script>var tl = gsap.timeline({ paused: true });
 tl.from("#scene h1", { y: 20, duration: 1 }, 1);
 tl.to("#scene h1", { x: 5, duration: 1 });
+tl.to("#side", { y: 1, duration: 0.5 });
 tl.to(["#scene h1", window.logo], { x: 1, duration: 1 }, 2);
 tl.to("#side", { x: 5, duration: 1 }, 1);
 window.__timelines["t"] = tl;</script>
@@ -1099,6 +1100,23 @@ window.__timelines["t"] = tl;</script>
     expect(script).toContain('tl.to("#scene h1", { x: 5, duration: 1 });');
     expect(script).toContain('tl.to(["#scene h1", window.logo], { x: 1, duration: 1 }, 2);');
     expect(script).toContain('tl.to("#side", { x: 5, duration: 1 }, 1);');
+    expect(script).toContain('tl.to("#side", { y: 1, duration: 0.5 }, 3);');
+  });
+
+  it("moving a clip in a template-wrapped composition carries its tweens", () => {
+    const parsed = parseMutable(`<template id="card-template">
+  <div data-composition-id="card-comp" data-hf-id="hf-comp" data-width="1280" data-height="720">
+    <div id="card" data-hf-id="hf-card" data-start="1" data-duration="2"><h1 data-hf-id="hf-t">Hi</h1></div>
+    <script>var tl = gsap.timeline({ paused: true });
+tl.to("[data-hf-id=\\"hf-card\\"]", { x: 1, duration: 1 }, 1);
+tl.from("#card h1", { y: 20, duration: 1 }, 1.5);
+window.__timelines["card-comp"] = tl;</script>
+  </div>
+</template>`);
+    applyOp(parsed, { type: "setTiming", target: "hf-card", start: 3 });
+    const script = getScript(parsed);
+    expect(script).toContain("{ x: 1, duration: 1 }, 3);");
+    expect(script).toContain('tl.from("#card h1", { y: 20, duration: 1 }, 3.5);');
   });
 
   it("canonicalizes a clip carrying both authored duration and derived end", () => {

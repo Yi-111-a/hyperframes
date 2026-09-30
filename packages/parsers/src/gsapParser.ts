@@ -51,7 +51,7 @@ export {
 } from "./gsapConstants";
 import { classifyPropertyGroup, classifyTweenPropertyGroup } from "./gsapConstants";
 import type { PropertyGroupName } from "./gsapConstants";
-import { clipTweenMatcher, hasExplicitTime } from "./clipTweens";
+import { clipTweenMatcher, hasExplicitTime, outsideFollowerPins } from "./clipTweens";
 import {
   findObjectArrayKeyframeIndex,
   getCompatibleObjectArrayKeyframeTiming,
@@ -1585,6 +1585,9 @@ export function shiftPositionsInScript(
     applyUpdatesToCall(entry.call, { position: newPos });
     changed = true;
   }
+  for (const { entry, start } of outsideFollowerPins(parsed.located, carries, hasExplicitTime)) {
+    applyUpdatesToCall(entry.call, { position: start });
+  }
   return changed ? recast.print(parsed.ast).code : script;
 }
 
@@ -1625,6 +1628,10 @@ export function scalePositionsInScript(
     }
     applyUpdatesToCall(entry.call, updates);
     changed = true;
+  }
+  const retimed = (animation: GsapAnimation) => typeof animation.position === "number";
+  for (const { entry, start } of outsideFollowerPins(parsed.located, carries, retimed)) {
+    applyUpdatesToCall(entry.call, { position: start });
   }
   return changed ? recast.print(parsed.ast).code : script;
 }

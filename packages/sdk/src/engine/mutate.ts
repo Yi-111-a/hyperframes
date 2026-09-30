@@ -29,6 +29,7 @@ import {
   setOwnText,
   getSiblingIndex,
   getGsapScript,
+  findGsapScriptElement,
   setGsapScript,
   getStyleSheet,
   setStyleSheet,
@@ -77,8 +78,10 @@ import {
   updateArcSegmentInScript,
   removeArcPathFromScript,
   unrollDynamicAnimations,
+  clipQueryRoot,
   clipTweenMatcher,
   hasExplicitTime,
+  outsideFollowerPins,
 } from "@hyperframes/core/gsap-writer-acorn";
 import { deriveKeyframeBackfillDefaults } from "./keyframeBackfill.js";
 import {
@@ -459,6 +462,8 @@ function handleSetTiming(
   // we avoid re-fetching the script element on every iteration.
   const origScript = getGsapScript(parsed.document);
   const parsedGsap = origScript ? parseGsapScriptAcornForWrite(origScript) : null;
+  const scriptElement = findGsapScriptElement(parsed.document);
+  const clipRoot = scriptElement ? clipQueryRoot(scriptElement) : parsed.document;
   let currentScript = origScript;
 
   for (const id of ids) {
@@ -543,10 +548,16 @@ function handleSetTiming(
     // Sync GSAP tween positions: the GSAP script is the source of truth at play time —
     // the timeline rebuilds from it on every seek. Without this, DOM attribute edits
     // have zero playback effect; the script's position/duration silently overrides them.
+    const hfId = el.getAttribute("data-hf-id") ?? id;
     const domId = el.getAttribute("id");
     const carries = clipTweenMatcher(
-      domId ? `#${domId}` : `[data-hf-id="${el.getAttribute("data-hf-id") ?? id}"]`,
-      parsed.document,
+      [
+        `[data-hf-id="${hfId}"]`,
+        `[data-hf-id='${hfId}']`,
+        `#${hfId}`,
+        ...(domId ? [`#${domId}`] : []),
+      ],
+      clipRoot,
     );
     if (parsedGsap && currentScript) {
       // A missing data-start means an implicit start of 0 (matching the server
@@ -588,6 +599,11 @@ function handleSetTiming(
         }
         if (Object.keys(updates).length === 0) continue;
         currentScript = updateAnimationInScript(currentScript, animId, updates);
+      }
+      const retimed = (animation: GsapAnimation) =>
+        (startChanged || durChanged) && typeof animation.position === "number";
+      for (const { entry, start } of outsideFollowerPins(parsedGsap.located, carries, retimed)) {
+        currentScript = updateAnimationInScript(currentScript, entry.id, { position: start });
       }
     }
   }

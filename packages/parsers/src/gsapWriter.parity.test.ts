@@ -1987,13 +1987,15 @@ describe("shift/scalePositionsInScript carry the clip's inner tweens", () => {
 tl.from("#scene", { opacity: 0, duration: 1 }, 1);
 tl.from("#scene h1", { y: 20, duration: 1 }, 1.5);
 tl.to("#child", { rotation: 90, duration: 1 });
+tl.to("#sibling", { y: 5, duration: 0.5 });
 tl.to("#child", { x: 10, duration: 1 }, 2);
 tl.to(["#child", "#scene h1"], { opacity: 0.5, duration: 1 }, 3);
 tl.to(".inner", { scale: 2, duration: 1 }, 3.5);
 tl.to("#sibling", { x: 5, duration: 1 }, 2);
 tl.to(".title", { color: "red", duration: 1 }, 2.5);
 tl.to("#deep", { y: 5, duration: 0.5 }, 2);
-tl.to(["#scene h1", window.logo], { x: 1, duration: 1 }, 2);`;
+tl.to(["#scene h1", window.logo], { x: 1, duration: 1 }, 2);
+tl.to(["#scene", window.logo], { x: 2, duration: 1 }, 2);`;
   const timings = (out: string) =>
     parseGsapScriptAcorn(out).animations.map((a) => [
       a.targetSelector,
@@ -2005,12 +2007,23 @@ tl.to(["#scene h1", window.logo], { x: 1, duration: 1 }, 2);`;
     ["recast", shiftRecast, scaleRecast],
   ] as const;
 
+  const bare = parseHTML(
+    `<html><body><div id="bare" class="card"><p>x</p></div></body></html>`,
+  ).document;
+  const bareScript = `const tl = gsap.timeline({ paused: true });
+tl.to(".card", { x: 1, duration: 1 }, 1);`;
+
   for (const [name, shift, scale] of writers) {
+    it(`${name}: a tween whose target is the clip moves with it, even without data-start`, () => {
+      expect(timings(shift(bareScript, "#bare", 1, bare))).toEqual([[".card", 2, 1]]);
+    });
+
     it(`${name}: a shift moves the clip and its descendants, never outside or nested clips`, () => {
       expect(timings(shift(script, "#scene", 2, document))).toEqual([
         ["#scene", 3, 1],
         ["#scene h1", 3.5, 1],
         ["#child", "chained", 1],
+        ["#sibling", 3.5, 0.5],
         ["#child", 4, 1],
         ["#child, #scene h1", 5, 1],
         [".inner", 5.5, 1],
@@ -2018,6 +2031,7 @@ tl.to(["#scene h1", window.logo], { x: 1, duration: 1 }, 2);`;
         [".title", 2.5, 1],
         ["#deep", 2, 0.5],
         ["#scene h1", 2, 1],
+        ["#scene", 2, 1],
       ]);
     });
 
@@ -2026,6 +2040,7 @@ tl.to(["#scene h1", window.logo], { x: 1, duration: 1 }, 2);`;
         ["#scene", 1, 2],
         ["#scene h1", 2, 2],
         ["#child", "chained", 2],
+        ["#sibling", 3.5, 0.5],
         ["#child", 3, 2],
         ["#child, #scene h1", 5, 2],
         [".inner", 6, 2],
@@ -2033,6 +2048,7 @@ tl.to(["#scene h1", window.logo], { x: 1, duration: 1 }, 2);`;
         [".title", 2.5, 1],
         ["#deep", 2, 0.5],
         ["#scene h1", 2, 1],
+        ["#scene", 2, 1],
       ]);
     });
   }
