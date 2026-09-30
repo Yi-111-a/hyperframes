@@ -11,8 +11,6 @@ import {
   openSync,
   readFileSync,
   readlinkSync,
-  writeFileSync,
-  writeSync,
   unlinkSync,
   rmSync,
   statSync,
@@ -23,7 +21,7 @@ import {
 import { resolve, dirname, join } from "node:path";
 import type { StudioApiAdapter } from "../types.js";
 import { isAudioFile } from "../helpers/mime.js";
-import { replaceFileAtomically } from "../helpers/atomicFile.js";
+import { createFileAtomically, replaceFileAtomically } from "@hyperframes/core/atomic-file";
 import { generateWaveformCache } from "../helpers/waveform.js";
 import { validateUploadedMediaBuffer } from "../helpers/mediaValidation.js";
 import {
@@ -2308,12 +2306,7 @@ async function processUploadedFiles(
     let written = false;
     while (n < MAX_COPY_INDEX && isSafePath(projectDir, finalPath)) {
       try {
-        const fd = openSync(finalPath, "wx");
-        try {
-          writeFileSync(fd, buffer);
-        } finally {
-          closeSync(fd);
-        }
+        createFileAtomically(finalPath, buffer);
         written = true;
         break;
       } catch (error) {
@@ -2441,9 +2434,8 @@ export function registerFileRoutes(api: Hono, adapter: StudioApiAdapter): void {
     let overwrote: Buffer | undefined;
     if (createOnly) {
       ensureDir(res.project.dir, res.absPath);
-      let fd: number;
       try {
-        fd = openSync(res.absPath, "wx");
+        createFileAtomically(res.absPath, body);
       } catch (error) {
         if (!error || typeof error !== "object" || !("code" in error) || error.code !== "EEXIST") {
           throw error;
@@ -2458,11 +2450,6 @@ export function registerFileRoutes(api: Hono, adapter: StudioApiAdapter): void {
           },
           409,
         );
-      }
-      try {
-        writeSync(fd, body, 0, body.length, 0);
-      } finally {
-        closeSync(fd);
       }
     } else {
       let fd: number | null;
@@ -2530,7 +2517,7 @@ export function registerFileRoutes(api: Hono, adapter: StudioApiAdapter): void {
     ensureDir(res.project.dir, res.absPath);
     const body = Buffer.from(await c.req.arrayBuffer());
     try {
-      writeFileSync(res.absPath, body, { flag: "wx" });
+      createFileAtomically(res.absPath, body);
     } catch (error) {
       if (!error || typeof error !== "object" || !("code" in error) || error.code !== "EEXIST") {
         throw error;
@@ -3239,7 +3226,7 @@ export function registerFileRoutes(api: Hono, adapter: StudioApiAdapter): void {
 
     ensureDir(project.dir, destAbs);
     try {
-      writeFileSync(destAbs, readFileSync(srcAbs), { flag: "wx" });
+      createFileAtomically(destAbs, readFileSync(srcAbs));
     } catch (error) {
       if (!error || typeof error !== "object" || !("code" in error) || error.code !== "EEXIST") {
         throw error;

@@ -44,6 +44,12 @@
       "types": "./dist/safePath.d.ts",
       "environments": ["bun", "node"]
     },
+    "./atomic-file": {
+      "source": "./src/atomicFile.ts",
+      "runtime": "./dist/atomicFile.js",
+      "types": "./dist/atomicFile.d.ts",
+      "environments": ["bun", "node"]
+    },
     "./asset-paths": {
       "source": "./src/compiler/rewriteSubCompPaths.ts",
       "runtime": "./dist/compiler/rewriteSubCompPaths.js",

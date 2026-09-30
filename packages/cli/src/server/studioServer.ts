@@ -8,7 +8,8 @@
 import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import { realpath } from "@hyperframes/core";
-import { existsSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync, unlinkSync } from "node:fs";
+import { replaceFileAtomically } from "@hyperframes/core/atomic-file";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { resolve, join, basename, relative, sep } from "node:path";
@@ -402,7 +403,7 @@ function rewriteWrittenToHostViewport(projectDir: string, written: string[]): vo
         return match;
       },
     );
-    writeFileSync(absPath, content, "utf-8");
+    replaceFileAtomically(absPath, content, statSync(absPath).mode);
   }
 }
 

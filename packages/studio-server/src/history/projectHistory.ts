@@ -14,7 +14,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { replaceFileAtomically } from "../helpers/atomicFile.js";
+import { replaceFileAtomically } from "@hyperframes/core/atomic-file";
 import {
   DELETED_VERSION,
   fileContentVersion,

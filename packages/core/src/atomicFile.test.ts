@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import { lstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { replaceFileAtomically } from "./atomicFile.js";
+import { createFileAtomically, replaceFileAtomically } from "./atomicFile.js";
 
 describe("replaceFileAtomically", () => {
   const dirs: string[] = [];
@@ -121,5 +121,96 @@ describe("replaceFileAtomically", () => {
     expect(tempPaths).toHaveLength(1);
     expect(tempPaths[0]).toMatch(new RegExp(`^${file}\\.\\d+\\.[0-9a-f-]+\\.tmp$`));
     expect(removed).toEqual(tempPaths);
+  });
+
+  it("keeps the default mode when none is given", () => {
+    const dir = mkdtempSync(join(tmpdir(), "atomic-file-mode-test-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "plain.html"), "x");
+
+    replaceFileAtomically(join(dir, "new.html"), "new");
+
+    expect(fs.statSync(join(dir, "new.html")).mode).toBe(fs.statSync(join(dir, "plain.html")).mode);
+  });
+});
+
+describe("createFileAtomically", () => {
+  const dirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+    dirs.length = 0;
+  });
+
+  function tempDir(): string {
+    const dir = mkdtempSync(join(tmpdir(), "atomic-create-test-"));
+    dirs.push(dir);
+    return dir;
+  }
+
+  it("publishes a complete file and leaves no temporary sibling", () => {
+    const dir = tempDir();
+    const file = join(dir, "index.html");
+    const operations = {
+      writeFileSync: (path: fs.PathLike, ...args: any[]) => {
+        expect(String(path)).not.toBe(file);
+        return fs.writeFileSync(path, ...args);
+      },
+      chmodSync: fs.chmodSync,
+      linkSync: (from: fs.PathLike, to: fs.PathLike) => {
+        expect(readFileSync(from, "utf-8")).toBe("complete html");
+        return fs.linkSync(from, to);
+      },
+      unlinkSync: fs.unlinkSync,
+    };
+
+    createFileAtomically(file, "complete html", operations);
+
+    expect(readFileSync(file, "utf-8")).toBe("complete html");
+    expect(fs.readdirSync(dir)).toEqual(["index.html"]);
+  });
+
+  it("refuses an existing file, keeping it and removing the temporary sibling", () => {
+    const dir = tempDir();
+    const file = join(dir, "index.html");
+    writeFileSync(file, "old");
+
+    expect(() => createFileAtomically(file, "new")).toThrow(
+      expect.objectContaining({ code: "EEXIST" }),
+    );
+    expect(readFileSync(file, "utf-8")).toBe("old");
+    expect(fs.readdirSync(dir)).toEqual(["index.html"]);
+  });
+
+  // Windows needs a privilege to create symlinks.
+  it.skipIf(process.platform === "win32")(
+    "refuses a dangling link without creating its target",
+    () => {
+      const dir = tempDir();
+      symlinkSync(join(dir, "target.html"), join(dir, "link.html"));
+
+      expect(() => createFileAtomically(join(dir, "link.html"), "new")).toThrow(
+        expect.objectContaining({ code: "EEXIST" }),
+      );
+      expect(fs.existsSync(join(dir, "target.html"))).toBe(false);
+    },
+  );
+
+  it("writes directly on a volume without hard links", () => {
+    const dir = tempDir();
+    const file = join(dir, "index.html");
+    const operations = {
+      writeFileSync: fs.writeFileSync,
+      chmodSync: fs.chmodSync,
+      linkSync: () => {
+        throw Object.assign(new Error("no hard links"), { code: "EPERM" });
+      },
+      unlinkSync: fs.unlinkSync,
+    };
+
+    createFileAtomically(file, "html", operations);
+
+    expect(readFileSync(file, "utf-8")).toBe("html");
+    expect(fs.readdirSync(dir)).toEqual(["index.html"]);
   });
 });

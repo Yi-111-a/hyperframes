@@ -58,6 +58,12 @@
       "import": "./src/safePath.ts",
       "types": "./src/safePath.ts"
     },
+    "./atomic-file": {
+      "bun": "./src/atomicFile.ts",
+      "node": "./dist/atomicFile.js",
+      "import": "./src/atomicFile.ts",
+      "types": "./src/atomicFile.ts"
+    },
     "./asset-paths": {
       "bun": "./src/compiler/rewriteSubCompPaths.ts",
       "node": "./dist/compiler/rewriteSubCompPaths.js",
@@ -491,6 +497,10 @@
       "./safe-path": {
         "import": "./dist/safePath.js",
         "types": "./dist/safePath.d.ts"
+      },
+      "./atomic-file": {
+        "import": "./dist/atomicFile.js",
+        "types": "./dist/atomicFile.d.ts"
       },
       "./asset-paths": {
         "import": "./dist/compiler/rewriteSubCompPaths.js",
