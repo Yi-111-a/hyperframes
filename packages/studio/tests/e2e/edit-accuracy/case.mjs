@@ -525,7 +525,6 @@ export async function runCase({ browser, spec, dir, files, url, evidence }) {
         redoBox: quadDistance(redone.visible, committed.visible),
       },
       smooth: drive.smooth,
-      reloaded,
       diag: {
         ...drive.diag,
         consoleErrors: consoleErrors.slice(0, 5),

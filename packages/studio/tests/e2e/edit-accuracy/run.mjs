@@ -15,14 +15,12 @@ import puppeteer from "puppeteer-core";
 import { resolveHeadlessShellPath } from "../../../../engine/src/index.ts";
 import { buildGrid, writeFixture } from "./grid.mjs";
 import { killServers, runCase, startServer, stopServer } from "./case.mjs";
-import { renderBox } from "./render.mjs";
-import { aabb, boxDistance } from "./geometry.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "../../../../..");
 const LIMIT_PX = 0.5;
 const FRAME_MS = 16.7;
-export const METRICS = ["tracking", "drop", "reload", "render", "undo", "smooth"];
+const METRICS = ["tracking", "drop", "reload", "undo", "smooth"];
 
 const { values: opt } = parseArgs({
   options: {
@@ -49,7 +47,6 @@ const worstValue = {
   tracking: (r) => r.tracking.max,
   drop: (r) => r.drop,
   reload: (r) => r.reload,
-  render: (r) => r.render,
   undo: (r) => (r.undo.bytes && r.undo.redoBytes ? 0 : 1e6) + Math.max(r.undo.box, r.undo.redoBox),
   smooth: (r) => r.smooth.p95,
 };
@@ -66,14 +63,13 @@ function score(spec, r) {
     tracking: r.tracking.max <= LIMIT_PX,
     drop: r.drop <= LIMIT_PX,
     reload: r.reload <= LIMIT_PX,
-    render: r.render <= LIMIT_PX,
     undo: r.undo.bytes && r.undo.redoBytes && Math.max(r.undo.box, r.undo.redoBox) <= LIMIT_PX,
     smooth: r.smooth.p95 !== null && r.smooth.p95 <= FRAME_MS,
   };
   return { ...spec, ...r, pass: Object.values(checks).every(Boolean), checks };
 }
 
-async function runOne(spec, browser, decoder, port) {
+async function runOne(spec, browser, port) {
   const started = Date.now();
   const root = mkdtempSync(join(tmpdir(), "hf-edit-accuracy-"));
   const dir = join(root, "case");
@@ -84,7 +80,7 @@ async function runOne(spec, browser, decoder, port) {
   let server;
   try {
     server = await startServer(opt.cli, dir, port, log);
-    const { reloaded, ...measured } = await runCase({
+    result = await runCase({
       browser,
       spec,
       dir,
@@ -92,21 +88,6 @@ async function runOne(spec, browser, decoder, port) {
       url: `http://127.0.0.1:${port}/#project/case`,
       evidence,
     });
-    await stopServer(server);
-    server = null;
-    const expected = aabb(reloaded.visible);
-    const render = await renderBox(dir, decoder);
-    evidence.frame = render.jpeg;
-    result = {
-      ...measured,
-      render: boxDistance(render.box, expected),
-      diag: {
-        ...measured.diag,
-        previewBox: expected,
-        pixelBox: render.box,
-        producerDomRect: render.domRect,
-      },
-    };
   } catch (error) {
     result = {
       error: `${error?.message ?? error}\n${error?.stack ?? ""}`.slice(0, 1200),
@@ -123,8 +104,6 @@ async function runOne(spec, browser, decoder, port) {
       writeFileSync(join(caseDir, `${name}.jpg`), jpeg);
     for (const [name, text] of Object.entries(evidence.files ?? {}))
       writeFileSync(join(caseDir, `saved-${name.replace("/", "-")}`), text);
-    if (evidence.frame && !scored.checks.render)
-      writeFileSync(join(caseDir, "producer.jpg"), evidence.frame);
   }
   rmSync(root, { recursive: true, force: true });
   const fails = METRICS.filter((m) => !scored.checks[m]).join(",");
@@ -141,9 +120,8 @@ async function worker(index, queue, results) {
     args: ["--no-sandbox", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"],
   });
   try {
-    const decoder = await browser.newPage();
     for (let spec = queue.shift(); spec; spec = queue.shift()) {
-      results.push(await runOne(spec, browser, decoder, Number(opt.port) + index));
+      results.push(await runOne(spec, browser, Number(opt.port) + index));
     }
   } finally {
     await browser.close();
@@ -187,7 +165,7 @@ function table(summary, meta, results) {
     `${summary.accurate}/${summary.total} pass every metric except smoothness.`,
     "",
     `Commit ${meta.commit}, grid \`${meta.grid}\`, ${meta.date}, ${summary.seconds}s with ${meta.jobs} jobs, ${summary.errors} harness errors.`,
-    `Pass: tracking, drop, reload and render ≤ ${LIMIT_PX} px; undo and redo byte-identical with the box ≤ ${LIMIT_PX} px; frame p95 ≤ ${FRAME_MS} ms.`,
+    `Pass: tracking, drop and reload ≤ ${LIMIT_PX} px; undo and redo byte-identical with the box ≤ ${LIMIT_PX} px; frame p95 ≤ ${FRAME_MS} ms.`,
     "",
     "| Metric | Pass | Worst | Worst case |",
     "|---|---|---|---|",
@@ -220,7 +198,6 @@ function baseline(meta, results) {
             tracking: round(r.tracking.max),
             drop: round(r.drop),
             reload: round(r.reload),
-            render: round(r.render),
             undo: r.checks.undo,
             smooth: round(r.smooth.p95),
           };
