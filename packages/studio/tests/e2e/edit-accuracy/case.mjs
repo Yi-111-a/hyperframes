@@ -393,22 +393,77 @@ async function sample(ctx, gesture, point, pointerScreen) {
   return { m, p: point(m), c: m.map.toComp(pointerScreen) };
 }
 
+const TRACE_CATEGORIES = ["toplevel", "devtools.timeline", "blink.user_timing"];
+const TRACE_MARK = "edit-bench-end";
+
+/** Frame stamps plus a main-thread trace of the drag; the end mark ties performance.now() to trace time. */
 async function recording(page, on) {
-  return page.evaluate((flag) => {
-    const rec = window.__editBench.rec;
-    if (flag) [rec.frames, rec.long, rec.on] = [[], [], true];
-    else rec.on = false;
-    return { frames: rec.frames, long: rec.long };
-  }, on);
+  if (on) await page.tracing.start({ categories: TRACE_CATEGORIES });
+  const rec = await page.evaluate(
+    (flag, mark) => {
+      const rec = window.__editBench.rec;
+      if (flag) [rec.frames, rec.long, rec.on] = [[], [], true];
+      else rec.on = false;
+      return {
+        frames: rec.frames,
+        long: rec.long,
+        mark: flag ? null : performance.mark(mark).startTime,
+      };
+    },
+    on,
+    TRACE_MARK,
+  );
+  if (on) return rec;
+  const trace = new TextDecoder().decode(await page.tracing.stop());
+  return { ...rec, trace: JSON.parse(trace).traceEvents };
 }
 
-function smoothness({ frames, long }) {
-  const intervals = frames.slice(1).map((t, i) => t - frames[i]);
+const isRunTask = (e) =>
+  e.ph === "X" && (e.name === "RunTask" || e.name === "ThreadControllerImpl::RunTask");
+
+/** Outermost tasks on one thread; nested RunTask events sit inside them. */
+function topLevelTasks(trace, { pid, tid }) {
+  const runs = trace
+    .filter((e) => e.pid === pid && e.tid === tid && isRunTask(e))
+    .sort((a, b) => a.ts - b.ts || b.dur - a.dur);
+  const tops = [];
+  let end = -Infinity;
+  for (const e of runs) {
+    if (e.ts < end) continue;
+    tops.push(e);
+    end = e.ts + e.dur;
+  }
+  return tops;
+}
+
+// Thread CPU time, spread evenly over the task, so a loaded machine descheduling the thread does not count as work.
+const cpuUs = (e, a, b) =>
+  (Math.max(0, Math.min(b, e.ts + e.dur) - Math.max(a, e.ts)) * e.tdur) / (e.dur || 1);
+
+/** Main-thread CPU ms inside each frame interval, on the thread that ran the end mark. */
+function mainThreadPerFrame({ frames, mark, trace }) {
+  const anchor = trace.find((e) => e.name === TRACE_MARK && e.cat.includes("user_timing"));
+  if (!anchor) throw new Error("no trace mark for the drag");
+  const toTrace = (ms) => anchor.ts + (ms - mark) * 1000;
+  const tasks = topLevelTasks(trace, anchor);
+  if (tasks.some((e) => e.tdur === undefined)) throw new Error("trace has no thread CPU time");
+  return frames.slice(1).map((t, i) => {
+    const [a, b] = [toTrace(frames[i]), toTrace(t)];
+    return tasks.reduce((sum, e) => sum + cpuUs(e, a, b), 0) / 1000;
+  });
+}
+
+const hundredth = (v) => Math.round(v * 100) / 100;
+
+function smoothness(rec) {
+  const intervals = rec.frames.slice(1).map((t, i) => t - rec.frames[i]);
+  const work = mainThreadPerFrame(rec);
   return {
     p95: percentile(intervals, 95),
-    over: intervals.filter((d) => d > 16.7).length,
     frames: intervals.length,
-    longTasks: long.length,
+    longTasks: rec.long.length,
+    intervals: intervals.map(hundredth),
+    work: work.map(hundredth),
   };
 }
 

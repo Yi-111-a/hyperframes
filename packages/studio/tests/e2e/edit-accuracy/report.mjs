@@ -1,9 +1,12 @@
 /** Scoring and the three report files (results.json, table.md, baseline.json) for the edit accuracy bench. */
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { percentile } from "./geometry.mjs";
 
 const LIMIT_PX = 0.5;
-const FRAME_MS = 16.7;
+// A frame over 1.5 vsyncs is dropped; raw rAF p95 stays reported so a different rule re-scores without a re-run.
+const DROPPED_FRAME_MS = 25;
+const WORK_MS = 8;
 export const METRICS = ["tracking", "drop", "reload", "undo", "smooth"];
 
 /** Worst-first value per metric; undo ranks by box distance, and its byte failures are counted apart. */
@@ -12,8 +15,15 @@ const worstValue = {
   drop: (r) => r.drop,
   reload: (r) => r.reload,
   undo: (r) => Math.max(r.undo.box, r.undo.redoBox),
-  smooth: (r) => r.smooth.p95,
+  smooth: (r) => r.smooth.workP95,
 };
+
+/** Dropped frames and main-thread ms per frame at p95, from the raw intervals and trace work a case stores. */
+const frameBudget = (smooth) => ({
+  ...smooth,
+  dropped: smooth.intervals.filter((d) => d > DROPPED_FRAME_MS).length,
+  workP95: percentile(smooth.work, 95),
+});
 
 // fallow-ignore-next-line complexity
 export function score(spec, r) {
@@ -24,14 +34,15 @@ export function score(spec, r) {
       pass: false,
       checks: Object.fromEntries(METRICS.map((m) => [m, false])),
     };
+  const smooth = frameBudget(r.smooth);
   const checks = {
     tracking: r.tracking.max <= LIMIT_PX,
     drop: r.drop <= LIMIT_PX,
     reload: r.reload <= LIMIT_PX,
     undo: r.undo.bytes && r.undo.redoBytes && Math.max(r.undo.box, r.undo.redoBox) <= LIMIT_PX,
-    smooth: r.smooth.p95 !== null && r.smooth.p95 <= FRAME_MS,
+    smooth: smooth.dropped === 0 && smooth.workP95 !== null && smooth.workP95 <= WORK_MS,
   };
-  return { ...spec, ...r, pass: Object.values(checks).every(Boolean), checks };
+  return { ...spec, ...r, smooth, pass: Object.values(checks).every(Boolean), checks };
 }
 
 const round = (v) => (typeof v === "number" ? Math.round(v * 100) / 100 : v);
@@ -81,7 +92,7 @@ function table(summary, meta, results) {
     `${summary.accurate}/${summary.total} pass every metric except smoothness.`,
     "",
     `Studio ${meta.studio}, bench ${meta.bench}, grid \`${meta.grid}\`, ${meta.date}, ${summary.seconds}s with ${meta.jobs} jobs, ${summary.errors} harness errors.`,
-    `Pass: tracking, drop and reload ≤ ${LIMIT_PX} px; undo and redo byte-identical with the box ≤ ${LIMIT_PX} px; frame p95 ≤ ${FRAME_MS} ms.`,
+    `Pass: tracking, drop and reload ≤ ${LIMIT_PX} px; undo and redo byte-identical with the box ≤ ${LIMIT_PX} px; no frame over ${DROPPED_FRAME_MS} ms and main-thread work ≤ ${WORK_MS} ms per frame at p95.`,
     "",
     `Undo or redo left different bytes in ${summary.bytesDiffer.undo} undo and ${summary.bytesDiffer.redo} redo cases.`,
     "",
@@ -114,7 +125,9 @@ function baseline(meta, results) {
             drop: roundUp(r.drop),
             reload: roundUp(r.reload),
             undo: r.checks.undo,
-            smooth: roundUp(r.smooth.p95),
+            dropped: r.smooth.dropped,
+            work: roundUp(r.smooth.workP95),
+            frameP95: roundUp(r.smooth.p95),
           };
       return `    ${JSON.stringify(r.id)}: ${JSON.stringify(v)}`;
     });
