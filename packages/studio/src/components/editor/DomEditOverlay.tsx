@@ -335,7 +335,6 @@ export const DomEditOverlay = memo(function DomEditOverlay({
     // extend beyond the composition rect into the gray zone, and users need
     // to select/deselect them by clicking there.
     onCanvasMouseDown(event, { hoverSelection: hoverSelectionRef.current });
-    if (event.shiftKey) suppressNextBoxClickRef.current = true;
   };
 
   // fallow-ignore-next-line complexity
