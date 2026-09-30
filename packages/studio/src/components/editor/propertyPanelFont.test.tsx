@@ -4,6 +4,12 @@ import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FontFamilyField } from "./propertyPanelFont";
+import { sortFontOptions } from "./propertyPanelHelpers";
+
+vi.mock("./propertyPanelHelpers", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./propertyPanelHelpers")>();
+  return { ...actual, sortFontOptions: vi.fn(actual.sortFontOptions) };
+});
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -26,5 +32,34 @@ describe("FontFamilyField flat trigger", () => {
     expect(trigger?.className).not.toContain("border-neutral-800");
     expect(host.textContent).toContain("JetBrains Mono");
     act(() => root.unmount());
+  });
+});
+
+describe("FontFamilyField font list", () => {
+  it("builds the list only while the dropdown is open", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => ({
+        ok: true,
+        json: async () => ({ fonts: url.includes("google") ? ["Roboto Slab"] : ["Arial"] }),
+      })),
+    );
+    vi.mocked(sortFontOptions).mockClear();
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const render = (value: string) =>
+      root.render(<FontFamilyField flat value={value} importedFonts={[]} onCommit={vi.fn()} />);
+    await act(async () => render("Inter"));
+    // The font lists arrive and the value changes while the dropdown is closed, as during a drag.
+    await act(async () => render("Lato"));
+    expect(sortFontOptions).not.toHaveBeenCalled();
+
+    const trigger = host.querySelector<HTMLButtonElement>('[data-flat-font-trigger="true"]');
+    await act(async () => trigger?.click());
+    expect(sortFontOptions).toHaveBeenCalledTimes(1);
+    expect(host.textContent).toContain("Roboto Slab");
+    act(() => root.unmount());
+    vi.unstubAllGlobals();
   });
 });
