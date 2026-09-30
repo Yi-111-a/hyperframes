@@ -73,6 +73,51 @@ describe("diffSoftReloadableRestore", () => {
   });
 });
 
+// What a first canvas edit adds to a file without GSAP (the server bootstraps a set plus a paused timeline).
+const BOOTSTRAP = `window.__timelines = window.__timelines || {};
+gsap.set("#t", { x: 90, y: 60 });
+const tl = gsap.timeline({ paused: true });
+window.__timelines["main"] = tl;`;
+const PLAIN = `<div data-composition-id="main"><div id="t" class="clip">t</div></div>\n    \n  `;
+const BOOTSTRAPPED = `${PLAIN}<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>\n<script>\n${BOOTSTRAP}\n</script>\n`;
+
+describe("undo of the first canvas edit in a file without GSAP", () => {
+  it("is soft: only the bootstrapped scripts differ", () => {
+    expect(diffSoftReloadableRestore(wrap(BOOTSTRAPPED), wrap(PLAIN))).toEqual({
+      changedElementKeys: [],
+    });
+  });
+
+  it("tears the bootstrapped timeline down in place, as a fresh load of the file would show", () => {
+    const { iframe, contentWindow, doc } = buildLiveIframe(
+      `<div data-composition-id="main"><div id="t" class="clip" style="transform: translate(90px, 60px); translate: none; rotate: none; scale: none; visibility: visible">t</div></div><script>${BOOTSTRAP}</script>`,
+    );
+    Object.assign(doc.getElementById("t")!, { _gsap: {} });
+    contentWindow.__timelines.main = { kill: vi.fn(), clear: vi.fn() };
+    Object.assign(contentWindow.gsap, { set: vi.fn() });
+    const reloadPreview = vi.fn();
+    const files = { index: { previous: wrap(BOOTSTRAPPED), restored: wrap(PLAIN) } };
+
+    expect(applyUndoRestoreToPreview(iframe, "index", files, 3, reloadPreview)).toBe("soft");
+    expect(reloadPreview).not.toHaveBeenCalled();
+    expect(doc.querySelectorAll("script")).toHaveLength(0);
+    expect(contentWindow.__timelines.main).toBeUndefined();
+    const style = doc.getElementById("t")!.style;
+    expect([style.transform, style.getPropertyValue("translate")]).toEqual(["", ""]);
+    expect(contentWindow.__player.seek).toHaveBeenCalledWith(3);
+  });
+
+  it("redo runs the bootstrapped script in place instead of remounting", () => {
+    const { iframe, doc } = buildLiveIframe(PLAIN);
+    const reloadPreview = vi.fn();
+    const files = { index: { previous: wrap(PLAIN), restored: wrap(BOOTSTRAPPED) } };
+
+    expect(applyUndoRestoreToPreview(iframe, "index", files, 3, reloadPreview)).toBe("soft");
+    expect(reloadPreview).not.toHaveBeenCalled();
+    expect(doc.querySelector("script")!.textContent).toContain('__timelines["main"]');
+  });
+});
+
 function buildLiveIframe(bodyHtml: string) {
   const doc = document.implementation.createHTMLDocument("");
   doc.body.innerHTML = bodyHtml;

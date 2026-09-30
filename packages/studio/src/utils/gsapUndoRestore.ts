@@ -53,12 +53,10 @@ function identityElementMap(doc: Document): Map<string, Element> | null {
   return map;
 }
 
-// Strip identified elements to their bare identity attributes and blank GSAP
-// scripts, in place: docs that differ only in identified-element attributes/
-// inline-style/script text normalize equal; any residual difference is beyond
-// soft-reload's reach → caller full-reloads. Both identity attributes are
-// KEPT, so a change to `id`/`data-hf-id` themselves stays a residual
-// (structural) difference.
+const GSAP_LIBRARY_SCRIPT = /\/gsap(@[^/]*)?\/dist\/gsap(\.min)?\.js/;
+
+// Strip identified elements to their bare identity attributes and drop GSAP scripts, in place: what
+// remains must match, or the restore is beyond soft-reload's reach. `id`/`data-hf-id` stay structural.
 function normalizeSoftResidual(doc: Document): void {
   for (const el of doc.querySelectorAll(IDENTITY_SELECTOR)) {
     const id = el.getAttribute("id");
@@ -69,7 +67,19 @@ function normalizeSoftResidual(doc: Document): void {
     if (id) el.setAttribute("id", id);
     if (hfId) el.setAttribute("data-hf-id", hfId);
   }
-  for (const script of findGsapScriptElements(doc)) script.textContent = "";
+  removeGsapScripts(doc);
+}
+
+// A first edit bootstraps GSAP into a file without it; undoing that is still attribute-and-script only.
+function removeGsapScripts(doc: Document): void {
+  const library = [...doc.querySelectorAll("script[src]")].filter((script) =>
+    GSAP_LIBRARY_SCRIPT.test(script.getAttribute("src") ?? ""),
+  );
+  for (const script of [...findGsapScriptElements(doc), ...library]) script.remove();
+  const blank = (node: ChildNode) => node.nodeType === 3 && !node.textContent?.trim();
+  for (const parent of [doc.documentElement, doc.head, doc.body]) {
+    for (const node of [...parent.childNodes].filter(blank)) node.remove();
+  }
 }
 
 /** Same attribute set with identical values (order-insensitive). */
@@ -263,15 +273,19 @@ export function applyUndoRestoreToPreview(
   // GSAP keeps what it parsed from an element (folded translate, its masks); a fresh load re-parses it.
   const gsapParsedChanged = changedTargets.some(({ live }) => "_gsap" in live);
   if (restoredScript !== previousScript || gsapParsedChanged) {
-    if (!restoredScript) {
+    const removed = !restoredScript && readGsapScriptTexts(restored).length === 0;
+    const added = !!restoredScript && readGsapScriptTexts(previous).length === 0;
+    const script = restoredScript ?? (removed ? previousScript : null);
+    if (!script) {
       reloadPreview();
       return "full";
     }
     syncStaleEditMarks(doc, restored);
-    const result = applySoftReload(iframe, restoredScript, {
+    const result = applySoftReload(iframe, script, {
       onAsyncFailure: reloadPreview,
       currentTimeOverride: currentTime,
       authoredHtml: restored,
+      bootstrap: removed ? "removed" : added ? "added" : undefined,
     });
     if (result === "cannot-soft-reload") {
       reloadPreview();

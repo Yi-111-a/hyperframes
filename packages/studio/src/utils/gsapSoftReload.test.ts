@@ -155,6 +155,16 @@ describe("applySoftReload", () => {
     });
   });
 
+  it('returns "cannot-soft-reload" when the live page has no GSAP script to replace', () => {
+    const { iframe } = buildMockIframe();
+    const doc = document.implementation.createHTMLDocument("");
+    Object.assign(iframe, { contentDocument: doc });
+    expect(applySoftReload(iframe, SCRIPT_TEXT)).toBe("cannot-soft-reload");
+    expect(applySoftReload(iframe, SCRIPT_TEXT, { bootstrap: "added" })).not.toBe(
+      "cannot-soft-reload",
+    );
+  });
+
   it("wraps execution in __hfSuppressSceneMutations when available", () => {
     let suppressionCalled = false;
     const { iframe } = buildMockIframe({
