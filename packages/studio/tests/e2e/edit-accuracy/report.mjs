@@ -35,6 +35,8 @@ export function score(spec, r) {
 }
 
 const round = (v) => (typeof v === "number" ? Math.round(v * 100) / 100 : v);
+// Rounded up for baseline.json, so a stored value is within a limit exactly when the measured one is.
+const roundUp = (v) => Math.ceil(v * 100 - 1e-9) / 100;
 
 function summarize(results, seconds) {
   const passing = results.filter((r) => r.pass).length;
@@ -108,11 +110,11 @@ function baseline(meta, results) {
         ? { pass: false, error: true }
         : {
             pass: r.pass,
-            tracking: round(r.tracking.max),
-            drop: round(r.drop),
-            reload: round(r.reload),
+            tracking: roundUp(r.tracking.max),
+            drop: roundUp(r.drop),
+            reload: roundUp(r.reload),
             undo: r.checks.undo,
-            smooth: round(r.smooth.p95),
+            smooth: roundUp(r.smooth.p95),
           };
       return `    ${JSON.stringify(r.id)}: ${JSON.stringify(v)}`;
     });
