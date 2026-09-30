@@ -34,7 +34,6 @@ export function compositionMapper(rootQuad, composition) {
   return {
     toComp: (p) => quadToLocal(rootQuad, composition, p),
     toScreen: (p) => localToQuad(rootQuad, composition, p),
-    pxPerComp: dist(rootQuad[0], rootQuad[1]) / composition.width,
   };
 }
 

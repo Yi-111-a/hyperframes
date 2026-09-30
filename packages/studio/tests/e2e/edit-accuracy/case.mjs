@@ -36,14 +36,24 @@ const up = (port) =>
     () => false,
   );
 const liveServers = new Set();
+/** Signals the server's process group; a group that already exited is not an error. */
+function signalGroup(child, signal) {
+  try {
+    process.kill(-child.pid, signal);
+  } catch (error) {
+    if (error.code !== "ESRCH") throw error;
+  }
+}
 /** Signal-safe cleanup: servers run in their own process group so the CLI's children go with them. */
 export function killServers() {
-  for (const child of liveServers) process.kill(-child.pid, "SIGKILL");
+  for (const child of liveServers) signalGroup(child, "SIGKILL");
 }
 
+const announcedPort = (log) => /http:\/\/localhost:(\d+)/.exec(log.join(""))?.[1];
+
 // fallow-ignore-next-line complexity
-export async function startServer(cli, dir, port, log) {
-  // The CLI quietly takes the next free port when asked for a busy one, so a busy port would test a stale project.
+export async function startServer(cli, dir, port, log, home) {
+  // The CLI quietly takes the next free port when asked for a busy one, so only the port it announces counts.
   if (await up(port)) throw new Error(`port ${port} is already serving`);
   const child = spawn(
     "node",
@@ -51,6 +61,13 @@ export async function startServer(cli, dir, port, log) {
     {
       stdio: ["ignore", "pipe", "pipe"],
       detached: true,
+      // A per-case HOME keeps Studio's undo history inside the case's tmp dir.
+      env: {
+        ...process.env,
+        HOME: home,
+        HYPERFRAMES_NO_TELEMETRY: "1",
+        HYPERFRAMES_NO_UPDATE_CHECK: "1",
+      },
     },
   );
   liveServers.add(child);
@@ -60,7 +77,12 @@ export async function startServer(cli, dir, port, log) {
   for (const deadline = Date.now() + 60_000; Date.now() < deadline; await sleep(200)) {
     if (child.exitCode !== null)
       throw new Error(`studio exited ${child.exitCode}: ${log.join("").slice(-500)}`);
-    if (await up(port)) return child;
+    const announced = announcedPort(log);
+    if (announced && announced !== String(port)) {
+      await stopServer(child);
+      throw new Error(`studio moved from port ${port} to ${announced}`);
+    }
+    if (announced && (await up(port))) return child;
   }
   await stopServer(child);
   throw new Error("studio did not start in 60s");
@@ -69,9 +91,9 @@ export async function startServer(cli, dir, port, log) {
 export async function stopServer(child) {
   if (child.exitCode !== null) return;
   const exited = new Promise((r) => child.once("exit", r));
-  process.kill(-child.pid, "SIGTERM");
+  signalGroup(child, "SIGTERM");
   if (await Promise.race([exited.then(() => true), sleep(5000)])) return;
-  process.kill(-child.pid, "SIGKILL");
+  signalGroup(child, "SIGKILL");
   await exited;
 }
 
@@ -190,16 +212,31 @@ async function measure(ctx) {
   return { map, quad, size, visible: visibleQuad(quad, size, parseInset(box.clip)) };
 }
 
-/** Measures until two reads a frame apart agree, so a settling soft reload is not caught mid-way. */
-async function settled(ctx, tries = 20) {
-  let prev = await measure(ctx);
-  for (let i = 0; i < tries; i++) {
-    await nextFrame(ctx.page, 2);
-    const now = await measure(ctx);
-    if (quadDistance(now.visible, prev.visible) < 0.01) return now;
+const STILL_MS = 1000;
+
+// Studio reloads an edited preview in a shadow iframe (`_t` in its URL) and swaps it in when painted.
+const previewFrames = (page) =>
+  page
+    .frames()
+    .map((f) => f.url())
+    .filter((u) => u.includes("/preview"))
+    .join(" ");
+
+/** Measures once the preview frames and the box have held still for STILL_MS; Studio updates both after a save. */
+// fallow-ignore-next-line complexity
+async function settled(ctx, timeout = 15_000) {
+  const deadline = Date.now() + timeout;
+  let prev = { m: await measure(ctx), frames: previewFrames(ctx.page) };
+  for (let since = Date.now(); Date.now() - since < STILL_MS; ) {
+    // A preview that never holds still is a Studio defect: the metrics it feeds fail, the rest still count.
+    if (Date.now() > deadline) return { ...prev.m, unsettled: true };
+    await nextFrame(ctx.page);
+    const now = { m: await measure(ctx), frames: previewFrames(ctx.page) };
+    if (now.frames !== prev.frames || quadDistance(now.m.visible, prev.m.visible) >= 0.01)
+      since = Date.now();
     prev = now;
   }
-  return prev;
+  return prev.m;
 }
 
 /** Ready once Studio's own seek tool reports the composition and the playhead landed. */
@@ -440,13 +477,13 @@ function topLevelTasks(trace, { pid, tid }) {
 const cpuUs = (e, a, b) =>
   (Math.max(0, Math.min(b, e.ts + e.dur) - Math.max(a, e.ts)) * e.tdur) / (e.dur || 1);
 
-/** Main-thread CPU ms inside each frame interval, on the thread that ran the end mark. */
+/** Main-thread CPU ms inside each frame interval, on the thread that ran the end mark; null when unknown. */
 function mainThreadPerFrame({ frames, mark, trace }) {
   const anchor = trace.find((e) => e.name === TRACE_MARK && e.cat.includes("user_timing"));
-  if (!anchor) throw new Error("no trace mark for the drag");
+  const tasks = anchor ? topLevelTasks(trace, anchor) : [];
+  // Without the mark or thread CPU time the work is unknown, which fails smoothness alone.
+  if (!anchor || tasks.some((e) => e.tdur === undefined)) return null;
   const toTrace = (ms) => anchor.ts + (ms - mark) * 1000;
-  const tasks = topLevelTasks(trace, anchor);
-  if (tasks.some((e) => e.tdur === undefined)) throw new Error("trace has no thread CPU time");
   return frames.slice(1).map((t, i) => {
     const [a, b] = [toTrace(frames[i]), toTrace(t)];
     return tasks.reduce((sum, e) => sum + cpuUs(e, a, b), 0) / 1000;
@@ -463,8 +500,49 @@ function smoothness(rec) {
     frames: intervals.length,
     longTasks: rec.long.length,
     intervals: intervals.map(hundredth),
-    work: work.map(hundredth),
+    work: work && work.map(hundredth),
   };
+}
+
+const CONTROL_PAGE = `data:text/html,<body style="margin:0;background:%23202020"><div id="box"
+  style="position:absolute;left:600px;top:300px;width:240px;height:160px;background:%23f0c020"></div>`;
+
+/** The case's drag schedule and per-frame reads on a blank page in the same Chrome: the machine's own frame drops. */
+async function controlDrag(browser, gesture) {
+  const context = await browser.createBrowserContext();
+  try {
+    const page = await context.newPage();
+    await page.setViewport(VIEWPORT);
+    await page.evaluateOnNewDocument(instrumentPage);
+    await page.goto(CONTROL_PAGE);
+    const box = await page.$("#box");
+    const ctx = { page, handles: { target: box, root: box } };
+    const read = () => readQuads(ctx);
+    if (gesture === "nudge") {
+      await recording(page, true);
+      for (let i = 0; i < NUDGES; i++) {
+        await page.keyboard.press("ArrowRight");
+        await nextFrame(page);
+      }
+      await nextFrame(page, 2);
+      return smoothness(await recording(page, false));
+    }
+    await page.mouse.move(700, 380);
+    await page.mouse.down();
+    await nextFrame(page);
+    await read();
+    await recording(page, true);
+    for (let i = 1; i <= STEPS; i++) {
+      await page.mouse.move(700 + (MOVE_BY[0] * i) / STEPS, 380 + (MOVE_BY[1] * i) / STEPS);
+      await nextFrame(page);
+      await read();
+    }
+    const smooth = smoothness(await recording(page, false));
+    await page.mouse.up();
+    return smooth;
+  } finally {
+    await context.close().catch(() => undefined);
+  }
 }
 
 async function pointerGesture(ctx, gesture, pre) {
@@ -497,6 +575,7 @@ async function pointerGesture(ctx, gesture, pre) {
   return {
     errors,
     lastQuad,
+    pressJump: quadDistance(s0.m.visible, pre.visible),
     smooth,
     diag: {
       hit,
@@ -519,6 +598,7 @@ async function nudgeGesture(ctx, pre) {
   return {
     errors: [dist([b[0] - a[0], b[1] - a[1]], [NUDGES, 0])],
     lastQuad: m.visible,
+    pressJump: null,
     smooth,
     diag: {},
   };
@@ -527,6 +607,7 @@ async function nudgeGesture(ctx, pre) {
 /** One case, end to end, in a fresh browser context against a Studio already serving `dir`. */
 // fallow-ignore-next-line complexity
 export async function runCase({ browser, spec, dir, files, url, evidence }) {
+  const control = await controlDrag(browser, spec.gesture);
   const context = await browser.createBrowserContext();
   const page = await context.newPage();
   const ctx = { page, dir, files, handles: null };
@@ -584,6 +665,7 @@ export async function runCase({ browser, spec, dir, files, url, evidence }) {
         p95: percentile(drive.errors, 95),
         frames: drive.errors.length,
       },
+      pressJump: drive.pressJump,
       drop: quadDistance(drive.lastQuad, committed.visible),
       reload: quadDistance(committed.visible, reloaded.visible),
       undo: {
@@ -592,7 +674,8 @@ export async function runCase({ browser, spec, dir, files, url, evidence }) {
         redoBytes: saved && redo.reached,
         redoBox: quadDistance(redone.visible, committed.visible),
       },
-      smooth: drive.smooth,
+      smooth: { ...drive.smooth, control },
+      unsettled: Object.keys(quads).filter((k) => quads[k].unsettled),
       diag: {
         ...drive.diag,
         consoleErrors: consoleErrors.slice(0, 5),

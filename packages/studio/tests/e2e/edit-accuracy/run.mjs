@@ -1,16 +1,13 @@
 #!/usr/bin/env bun
-/**
- * Edit accuracy benchmark: real pointer and keyboard gestures in the built CLI Studio, scored in composition px.
- * Build the CLI first (core, parsers, lint and studio-server included), then:
- *   bun run --cwd packages/studio test:edit-accuracy -- --grid full --jobs 4
- * Flags: --grid full|pr  --shard i/n  --jobs N  --filter <regex on case id>  --out <dir>  --port <first>  --cli <cli.js>
- */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+// Edit accuracy bench: real gestures in the built CLI Studio (build core, parsers, lint, studio-server first).
+// bun run --cwd packages/studio test:edit-accuracy -- --grid full|pr --jobs N [--shard i/n] [--filter re] [--lock path]
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { loadavg, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { execSync } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 import puppeteer from "puppeteer-core";
 import { resolveHeadlessShellPath } from "../../../../engine/src/index.ts";
 import { buildGrid, writeFixture } from "./grid.mjs";
@@ -29,6 +26,7 @@ const { values: opt } = parseArgs({
     out: { type: "string" },
     port: { type: "string", default: "5800" },
     cli: { type: "string", default: join(REPO, "packages/cli/dist/cli.js") },
+    lock: { type: "string" },
   },
 });
 const [shard, shards] = opt.shard.split("/").map(Number);
@@ -62,9 +60,12 @@ const errorResult = (error, log) => ({
   serverLog: log.join("").slice(-600),
 });
 
+const liveRoots = new Set();
+
 async function runOne(spec, browser, port) {
   const started = Date.now();
   const root = mkdtempSync(join(tmpdir(), "hf-edit-accuracy-"));
+  liveRoots.add(root);
   const dir = join(root, "case");
   const files = writeFixture(spec, dir);
   const evidence = {};
@@ -72,7 +73,7 @@ async function runOne(spec, browser, port) {
   let result;
   let server;
   try {
-    server = await startServer(opt.cli, dir, port, log);
+    server = await startServer(opt.cli, dir, port, log, join(root, "home"));
     result = await runCase({
       browser,
       spec,
@@ -89,47 +90,87 @@ async function runOne(spec, browser, port) {
   const scored = { ...score(spec, result), seconds: (Date.now() - started) / 1000 };
   if (!scored.pass) saveEvidence(spec.id, evidence);
   rmSync(root, { recursive: true, force: true });
+  liveRoots.delete(root);
   console.log(verdict(scored));
   return scored;
 }
 
-async function worker(index, queue, results) {
-  const browser = await puppeteer.launch({
-    executablePath: chrome,
-    headless: true,
-    args: ["--no-sandbox", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"],
+/** Holds an flock on `path` until the returned release is called; flock(1) owns the lock, so it dies with us. */
+function acquireLock(path) {
+  const child = spawn("flock", [path, "-c", "echo locked; exec cat"], {
+    stdio: ["pipe", "pipe", "inherit"],
   });
-  try {
-    for (let spec = queue.shift(); spec; spec = queue.shift()) {
-      results.push(await runOne(spec, browser, Number(opt.port) + index));
+  return new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code) => reject(new Error(`flock ${path} exited ${code}`)));
+    child.stdout.once("data", () => resolve(() => child.stdin.end()));
+  });
+}
+
+// The suite lock is taken per chunk, so a full grid never holds it for its whole run.
+const LOCK_CHUNK = 8;
+
+// fallow-ignore-next-line complexity
+async function runChunks(queue, browsers, results) {
+  for (let start = 0; start < queue.length; start += opt.lock ? LOCK_CHUNK : queue.length) {
+    const chunk = queue.slice(start, opt.lock ? start + LOCK_CHUNK : queue.length);
+    const release = opt.lock ? await acquireLock(opt.lock) : () => undefined;
+    try {
+      await Promise.all(
+        browsers.map(async (browser, i) => {
+          for (let spec = chunk.shift(); spec; spec = chunk.shift())
+            results.push(await runOne(spec, browser, Number(opt.port) + i));
+        }),
+      );
+    } finally {
+      release();
     }
-  } finally {
-    await browser.close();
   }
 }
 
-process.on("exit", killServers);
+function cleanup() {
+  killServers();
+  for (const root of liveRoots) rmSync(root, { recursive: true, force: true });
+}
+process.on("exit", cleanup);
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
   process.on(signal, () => {
-    killServers();
+    cleanup();
     process.exit(130);
   });
 }
-// Stamped at start. Studio is the last commit to shipped package code, which the built CLI is assumed to come from.
+// Stamped at start from the CLI that runs: its tree's commit and a hash of the built bundle.
 const git = (args) => execSync(`git ${args}`, { cwd: REPO }).toString().trim();
-const studio = git(
-  "log -1 --format=%h -- packages :!packages/studio/tests :!packages/studio/package.json",
-);
+const studio = execSync("git rev-parse --short HEAD", { cwd: dirname(opt.cli) })
+  .toString()
+  .trim();
+const build = createHash("sha256").update(readFileSync(opt.cli)).digest("hex").slice(0, 12);
 const bench = git("rev-parse --short HEAD");
+const load = loadavg()
+  .map((v) => v.toFixed(1))
+  .join(" ");
 const started = Date.now();
-const queue = [...cases];
 const results = [];
 const jobs = Math.max(1, Math.min(Number(opt.jobs), cases.length));
 console.log(`edit accuracy: ${cases.length} cases, ${jobs} jobs, chrome ${chrome}, out ${out}`);
-await Promise.all(Array.from({ length: jobs }, (_, i) => worker(i, queue, results)));
+const browsers = await Promise.all(
+  Array.from({ length: jobs }, () =>
+    puppeteer.launch({
+      executablePath: chrome,
+      headless: true,
+      args: ["--no-sandbox", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"],
+    }),
+  ),
+);
+try {
+  await runChunks([...cases], browsers, results);
+} finally {
+  await Promise.all(browsers.map((b) => b.close()));
+}
 results.sort((a, b) => a.id.localeCompare(b.id));
 const meta = {
   studio,
+  build,
   bench,
   grid:
     opt.grid +
@@ -138,5 +179,8 @@ const meta = {
   date: new Date().toISOString(),
   jobs,
   chrome,
+  load: `${load} to ${loadavg()
+    .map((v) => v.toFixed(1))
+    .join(" ")}`,
 };
 console.log(writeReport(out, meta, results, (Date.now() - started) / 1000));

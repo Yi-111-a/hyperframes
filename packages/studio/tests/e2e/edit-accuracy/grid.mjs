@@ -1,7 +1,5 @@
-/**
- * The edit accuracy grid: every case is one flat-coloured element in a generated project,
- * crossed with one gesture. Projects are written to a tmp dir per case; nothing checked in is edited.
- */
+// The edit accuracy grid: one flat-coloured element in a generated project, crossed with one gesture.
+// Projects are written to a tmp dir per case; nothing checked in is edited.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
