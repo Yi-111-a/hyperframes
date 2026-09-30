@@ -676,6 +676,7 @@ export async function runCase({ browser, spec, dir, files, url, evidence }) {
       },
       smooth: { ...drive.smooth, control },
       unsettled: Object.keys(quads).filter((k) => quads[k].unsettled),
+      reloaded,
       diag: {
         ...drive.diag,
         consoleErrors: consoleErrors.slice(0, 5),
