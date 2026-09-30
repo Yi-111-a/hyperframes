@@ -77,6 +77,8 @@ import {
   updateArcSegmentInScript,
   removeArcPathFromScript,
   unrollDynamicAnimations,
+  clipTweenMatcher,
+  hasExplicitTime,
 } from "@hyperframes/core/gsap-writer-acorn";
 import { deriveKeyframeBackfillDefaults } from "./keyframeBackfill.js";
 import {
@@ -541,12 +543,11 @@ function handleSetTiming(
     // Sync GSAP tween positions: the GSAP script is the source of truth at play time —
     // the timeline rebuilds from it on every seek. Without this, DOM attribute edits
     // have zero playback effect; the script's position/duration silently overrides them.
-    // Match against BOTH the element's data-hf-id (the canonical form) AND its DOM
-    // id: the Studio GSAP panel / ensureElementAddressable author tweens as
-    // `#domId`, which selectorMatchesId(hfId) never matched — so moving/resizing
-    // those clips left their tweens unsynced.
-    const matchHfId = el.getAttribute("data-hf-id") ?? id;
-    const matchDomId = el.getAttribute("id");
+    const domId = el.getAttribute("id");
+    const carries = clipTweenMatcher(
+      domId ? `#${domId}` : `[data-hf-id="${el.getAttribute("data-hf-id") ?? id}"]`,
+      parsed.document,
+    );
     if (parsedGsap && currentScript) {
       // A missing data-start means an implicit start of 0 (matching the server
       // shiftGsapPositions path); a malformed attr parses to NaN. Sanitize to a
@@ -566,10 +567,7 @@ function handleSetTiming(
           : 1;
       const remapStart = startChanged && newStart !== null ? newStart : oldStartNum;
       for (const { id: animId, animation } of parsedGsap.located) {
-        const matches =
-          selectorMatchesId(animation.targetSelector, matchHfId) ||
-          (matchDomId !== null && selectorMatchesId(animation.targetSelector, matchDomId));
-        if (!matches) continue;
+        if (!carries(animation)) continue;
         // Skip tweens whose position is a label or relative string ("+=0.5",
         // "<", ">"): relative positions already track their neighbours, and a
         // string position can't be safely shifted by the clip delta here.
@@ -581,7 +579,7 @@ function handleSetTiming(
         // explicit position arg → parsed as implicitPosition): the writer would
         // APPEND a position arg, collapsing the stagger onto one point. Duration
         // still scales below.
-        if ((startChanged || durChanged) && animation.implicitPosition !== true) {
+        if ((startChanged || durChanged) && hasExplicitTime(animation)) {
           const shifted = remapStart + (animation.position - oldStartNum) * ratio;
           updates.position = Math.max(0, Math.round(shifted * 1000) / 1000);
         }

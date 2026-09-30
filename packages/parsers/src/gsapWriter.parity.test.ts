@@ -7,8 +7,7 @@
  * This is the safety net for porting WS-3 ops one at a time: each ported op
  * gets a fixture row here proving it matches the battle-tested original.
  *
- * The server switches between writers via STUDIO_SDK_CUTOVER_ENABLED (WS-3.F).
- * Recast remains the default; acorn runs only when the flag is enabled.
+ * The server picks the writer from HYPERFRAMES_GSAP_WRITER; acorn is the default.
  */
 import { describe, expect, it } from "vitest";
 import { parseHTML } from "linkedom";
@@ -1987,14 +1986,20 @@ describe("shift/scalePositionsInScript carry the clip's inner tweens", () => {
   const script = `const tl = gsap.timeline({ paused: true });
 tl.from("#scene", { opacity: 0, duration: 1 }, 1);
 tl.from("#scene h1", { y: 20, duration: 1 }, 1.5);
+tl.to("#child", { rotation: 90, duration: 1 });
 tl.to("#child", { x: 10, duration: 1 }, 2);
 tl.to(["#child", "#scene h1"], { opacity: 0.5, duration: 1 }, 3);
 tl.to(".inner", { scale: 2, duration: 1 }, 3.5);
 tl.to("#sibling", { x: 5, duration: 1 }, 2);
 tl.to(".title", { color: "red", duration: 1 }, 2.5);
-tl.to("#deep", { y: 5, duration: 0.5 }, 2);`;
+tl.to("#deep", { y: 5, duration: 0.5 }, 2);
+tl.to(["#scene h1", window.logo], { x: 1, duration: 1 }, 2);`;
   const timings = (out: string) =>
-    parseGsapScriptAcorn(out).animations.map((a) => [a.targetSelector, a.position, a.duration]);
+    parseGsapScriptAcorn(out).animations.map((a) => [
+      a.targetSelector,
+      a.implicitPosition ? "chained" : a.position,
+      a.duration,
+    ]);
   const writers = [
     ["acorn", shiftAcorn, scaleAcorn],
     ["recast", shiftRecast, scaleRecast],
@@ -2005,12 +2010,14 @@ tl.to("#deep", { y: 5, duration: 0.5 }, 2);`;
       expect(timings(shift(script, "#scene", 2, document))).toEqual([
         ["#scene", 3, 1],
         ["#scene h1", 3.5, 1],
+        ["#child", "chained", 1],
         ["#child", 4, 1],
         ["#child, #scene h1", 5, 1],
         [".inner", 5.5, 1],
         ["#sibling", 2, 1],
         [".title", 2.5, 1],
         ["#deep", 2, 0.5],
+        ["#scene h1", 2, 1],
       ]);
     });
 
@@ -2018,12 +2025,14 @@ tl.to("#deep", { y: 5, duration: 0.5 }, 2);`;
       expect(timings(scale(script, "#scene", 1, 4, 1, 8, document))).toEqual([
         ["#scene", 1, 2],
         ["#scene h1", 2, 2],
+        ["#child", "chained", 2],
         ["#child", 3, 2],
         ["#child, #scene h1", 5, 2],
         [".inner", 6, 2],
         ["#sibling", 2, 1],
         [".title", 2.5, 1],
         ["#deep", 2, 0.5],
+        ["#scene h1", 2, 1],
       ]);
     });
   }

@@ -32,7 +32,9 @@ import {
 } from "./gsapObjectArrayTiming.js";
 import type { SplitAnimationsOptions, SplitAnimationsResult } from "./gsapSerialize.js";
 import * as acornWalk from "acorn-walk";
-import { clipTweenMatcher } from "./clipTweens.js";
+import { clipTweenMatcher, hasExplicitTime } from "./clipTweens.js";
+
+export { clipTweenMatcher, hasExplicitTime };
 
 // acorn ESTree nodes are structurally untyped here; mirror gsapParserAcorn.ts /
 // gsapInline.ts rather than re-deriving the full ESTree union for every access.
@@ -462,8 +464,7 @@ export function shiftPositionsInScript(
   const ms = new MagicString(script);
   let changed = false;
   for (const entry of parsed.located) {
-    if (!carries(entry.animation.targetSelector)) continue;
-    if (typeof entry.animation.position !== "number") continue;
+    if (!carries(entry.animation) || !hasExplicitTime(entry.animation)) continue;
     const newPos = Math.max(0, Math.round((entry.animation.position + delta) * 1000) / 1000);
     overwritePosition(ms, entry.call, newPos);
     changed = true;
@@ -494,13 +495,14 @@ export function scalePositionsInScript(
   const ms = new MagicString(script);
   let changed = false;
   for (const entry of parsed.located) {
-    if (!carries(entry.animation.targetSelector)) continue;
-    if (typeof entry.animation.position !== "number") continue;
-    const newPos = Math.max(
-      0,
-      Math.round((newStart + (entry.animation.position - oldStart) * ratio) * 1000) / 1000,
-    );
-    overwritePosition(ms, entry.call, newPos);
+    if (!carries(entry.animation) || typeof entry.animation.position !== "number") continue;
+    if (hasExplicitTime(entry.animation)) {
+      const newPos = Math.max(
+        0,
+        Math.round((newStart + (entry.animation.position - oldStart) * ratio) * 1000) / 1000,
+      );
+      overwritePosition(ms, entry.call, newPos);
+    }
     if (typeof entry.animation.duration === "number" && entry.animation.duration > 0) {
       const newDur = Math.max(0.001, Math.round(entry.animation.duration * ratio * 1000) / 1000);
       upsertProp(ms, entry.call.varsArg, "duration", newDur);

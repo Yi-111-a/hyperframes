@@ -2513,7 +2513,9 @@ tl.to("#b", { duration: 1, x: 200 }, 2);
   it("moving or stretching a clip retimes the tweens inside it and leaves outside ones alone", async () => {
     const comp = `<template id="scene-template">
   <div data-composition-id="scene" data-width="1920" data-height="1080">
-    <div id="card" class="clip" data-start="1" data-duration="2"><h1>Hi</h1><p id="line">Kid</p></div>
+    <div id="card" class="clip" data-start="1" data-duration="2"><h1>Hi</h1><p id="line">Kid</p>
+      <div id="pip" class="clip" data-start="1.5" data-duration="1"><i id="dot"></i></div>
+    </div>
     <div id="side" class="clip" data-start="0" data-duration="3"></div>
   </div>
   <script>
@@ -2521,6 +2523,7 @@ tl.to("#b", { duration: 1, x: 200 }, 2);
     tl.from("#card h1", { y: 20, duration: 1 }, 1);
     tl.to("#line", { x: 10, duration: 1 }, 1.5);
     tl.to("#side", { x: 5, duration: 1 }, 1);
+    tl.to("#dot", { x: 1, duration: 1 }, 1.5);
     window.__timelines["scene"] = tl;
   </script>
 </template>`;
@@ -2545,6 +2548,7 @@ tl.to("#b", { duration: 1, x: 200 }, 2);
     expect(moved).toContain('tl.from("#card h1", { y: 20, duration: 1 }, 3);');
     expect(moved).toContain('tl.to("#line", { x: 10, duration: 1 }, 3.5);');
     expect(moved).toContain('tl.to("#side", { x: 5, duration: 1 }, 1);');
+    expect(moved).toContain('tl.to("#dot", { x: 1, duration: 1 }, 1.5);');
 
     const stretched = await mutate({
       type: "scale-positions",
@@ -2557,6 +2561,7 @@ tl.to("#b", { duration: 1, x: 200 }, 2);
     expect(stretched).toContain('tl.from("#card h1", { y: 20, duration: 2 }, 3);');
     expect(stretched).toContain('tl.to("#line", { x: 10, duration: 2 }, 4);');
     expect(stretched).toContain('tl.to("#side", { x: 5, duration: 1 }, 1);');
+    expect(stretched).toContain('tl.to("#dot", { x: 1, duration: 1 }, 1.5);');
   });
 
   it("rejects a shift-positions-batch with a missing/non-array `shifts` field (400)", async () => {

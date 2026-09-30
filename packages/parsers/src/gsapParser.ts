@@ -51,7 +51,7 @@ export {
 } from "./gsapConstants";
 import { classifyPropertyGroup, classifyTweenPropertyGroup } from "./gsapConstants";
 import type { PropertyGroupName } from "./gsapConstants";
-import { clipTweenMatcher } from "./clipTweens";
+import { clipTweenMatcher, hasExplicitTime } from "./clipTweens";
 import {
   findObjectArrayKeyframeIndex,
   getCompatibleObjectArrayKeyframeTiming,
@@ -403,6 +403,23 @@ function lookupBinding(name: string, path: AstPath, bindings: TargetBindings): s
   return null;
 }
 
+function hasUnresolvedArrayPart(
+  node: AstNode,
+  path: AstPath,
+  scope: ScopeBindings,
+  bindings: TargetBindings,
+  helpers: TargetHelpers,
+): boolean {
+  return (
+    node?.type === "ArrayExpression" &&
+    node.elements.some(
+      (el: AstNode) =>
+        !resolveTargetSelector(el, path, scope, bindings, helpers) ||
+        hasUnresolvedArrayPart(el, path, scope, bindings, helpers),
+    )
+  );
+}
+
 /**
  * Resolve a tween's first argument to a CSS selector. Handles inline string
  * literals, element variables (lexically scoped), arrays of elements (joined
@@ -586,6 +603,7 @@ interface TweenCallInfo {
   node: AstNode;
   method: GsapMethod;
   selector: string;
+  selectorPartial?: boolean;
   varsArg: AstNode;
   fromArg?: AstNode;
   positionArg?: AstNode;
@@ -650,6 +668,9 @@ function findAllTweenCalls(
         const selectorValue =
           resolveTargetSelector(args[0], path, scope, targetBindings, targetHelpers) ??
           "__unresolved__";
+        const partial = hasUnresolvedArrayPart(args[0], path, scope, targetBindings, targetHelpers)
+          ? { selectorPartial: true }
+          : {};
 
         if (method === "fromTo") {
           results.push({
@@ -657,6 +678,7 @@ function findAllTweenCalls(
             node,
             method: "fromTo",
             selector: selectorValue,
+            ...partial,
             fromArg: args[1],
             varsArg: args[2],
             positionArg: args[3],
@@ -667,6 +689,7 @@ function findAllTweenCalls(
             node,
             method: method as GsapMethod,
             selector: selectorValue,
+            ...partial,
             varsArg: args[1],
             positionArg: args[2],
             ...(isGlobalSet ? { global: true } : {}),
@@ -1135,6 +1158,7 @@ function tweenCallToAnimation(
   if (motionPathResult) anim.arcPath = motionPathResult.arcPath;
   if (hasUnresolvedKeyframes) anim.hasUnresolvedKeyframes = true;
   if (call.selector === "__unresolved__") anim.hasUnresolvedSelector = true;
+  if (call.selectorPartial) anim.hasPartialSelector = true;
   return anim;
 }
 
@@ -1556,8 +1580,7 @@ export function shiftPositionsInScript(
   }
   let changed = false;
   for (const entry of parsed.located) {
-    if (!carries(entry.animation.targetSelector)) continue;
-    if (typeof entry.animation.position !== "number") continue;
+    if (!carries(entry.animation) || !hasExplicitTime(entry.animation)) continue;
     const newPos = Math.max(0, Math.round((entry.animation.position + delta) * 1000) / 1000);
     applyUpdatesToCall(entry.call, { position: newPos });
     changed = true;
@@ -1586,13 +1609,14 @@ export function scalePositionsInScript(
   }
   let changed = false;
   for (const entry of parsed.located) {
-    if (!carries(entry.animation.targetSelector)) continue;
-    if (typeof entry.animation.position !== "number") continue;
-    const newPos = Math.max(
-      0,
-      Math.round((newStart + (entry.animation.position - oldStart) * ratio) * 1000) / 1000,
-    );
-    const updates: Partial<GsapAnimation> = { position: newPos };
+    if (!carries(entry.animation) || typeof entry.animation.position !== "number") continue;
+    const updates: Partial<GsapAnimation> = {};
+    if (hasExplicitTime(entry.animation)) {
+      updates.position = Math.max(
+        0,
+        Math.round((newStart + (entry.animation.position - oldStart) * ratio) * 1000) / 1000,
+      );
+    }
     if (typeof entry.animation.duration === "number" && entry.animation.duration > 0) {
       updates.duration = Math.max(
         0.001,
