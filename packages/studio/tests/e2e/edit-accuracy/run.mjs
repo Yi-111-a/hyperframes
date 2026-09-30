@@ -15,12 +15,10 @@ import puppeteer from "puppeteer-core";
 import { resolveHeadlessShellPath } from "../../../../engine/src/index.ts";
 import { buildGrid, writeFixture } from "./grid.mjs";
 import { killServers, runCase, startServer, stopServer } from "./case.mjs";
+import { METRICS, score, writeReport } from "./report.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "../../../../..");
-const LIMIT_PX = 0.5;
-const FRAME_MS = 16.7;
-const METRICS = ["tracking", "drop", "reload", "undo", "smooth"];
 
 const { values: opt } = parseArgs({
   options: {
@@ -41,34 +39,6 @@ const out = resolve(opt.out ?? join(HERE, "../evidence/edit-accuracy", runId));
 const chrome = resolveHeadlessShellPath();
 if (!chrome) throw new Error("no chrome-headless-shell: run `npx hyperframes browser ensure`");
 mkdirSync(out, { recursive: true });
-
-/** Worst-first value per metric; a failed byte check ranks above any box distance. */
-const worstValue = {
-  tracking: (r) => r.tracking.max,
-  drop: (r) => r.drop,
-  reload: (r) => r.reload,
-  undo: (r) => (r.undo.bytes && r.undo.redoBytes ? 0 : 1e6) + Math.max(r.undo.box, r.undo.redoBox),
-  smooth: (r) => r.smooth.p95,
-};
-
-// fallow-ignore-next-line complexity
-function score(spec, r) {
-  if (r.error)
-    return {
-      ...spec,
-      ...r,
-      pass: false,
-      checks: Object.fromEntries(METRICS.map((m) => [m, false])),
-    };
-  const checks = {
-    tracking: r.tracking.max <= LIMIT_PX,
-    drop: r.drop <= LIMIT_PX,
-    reload: r.reload <= LIMIT_PX,
-    undo: r.undo.bytes && r.undo.redoBytes && Math.max(r.undo.box, r.undo.redoBox) <= LIMIT_PX,
-    smooth: r.smooth.p95 !== null && r.smooth.p95 <= FRAME_MS,
-  };
-  return { ...spec, ...r, pass: Object.values(checks).every(Boolean), checks };
-}
 
 /** Evidence for a failing case only: the Studio screens at each stage and the saved files. */
 // fallow-ignore-next-line complexity
@@ -138,85 +108,6 @@ async function worker(index, queue, results) {
   }
 }
 
-const round = (v) => (typeof v === "number" ? Math.round(v * 100) / 100 : v);
-
-function summarize(results, seconds) {
-  const passing = results.filter((r) => r.pass).length;
-  // Smoothness is still ungated in CI, so the score is also shown without it.
-  const accurate = results.filter((r) =>
-    METRICS.every((m) => m === "smooth" || r.checks[m]),
-  ).length;
-  const measured = results.filter((r) => !r.error);
-  const perMetric = METRICS.map((m) => {
-    const worst = measured.reduce(
-      (a, r) => (!a || worstValue[m](r) > worstValue[m](a) ? r : a),
-      null,
-    );
-    return {
-      metric: m,
-      pass: results.filter((r) => r.checks[m]).length,
-      worst: worst && { id: worst.id, value: round(worstValue[m](worst)) },
-    };
-  });
-  return {
-    passing,
-    accurate,
-    total: results.length,
-    errors: results.length - measured.length,
-    perMetric,
-    seconds: Math.round(seconds),
-  };
-}
-
-// fallow-ignore-next-line complexity
-const metricRow = (m, total) =>
-  `| ${m.metric} | ${m.pass}/${total} | ${m.worst?.value ?? "-"} | ${m.worst?.id ?? "-"} |`;
-
-function table(summary, meta, results) {
-  const lines = [
-    `# Edit accuracy: ${summary.passing}/${summary.total} cases pass`,
-    "",
-    `${summary.accurate}/${summary.total} pass every metric except smoothness.`,
-    "",
-    `Commit ${meta.commit}, grid \`${meta.grid}\`, ${meta.date}, ${summary.seconds}s with ${meta.jobs} jobs, ${summary.errors} harness errors.`,
-    `Pass: tracking, drop and reload ≤ ${LIMIT_PX} px; undo and redo byte-identical with the box ≤ ${LIMIT_PX} px; frame p95 ≤ ${FRAME_MS} ms.`,
-    "",
-    "| Metric | Pass | Worst | Worst case |",
-    "|---|---|---|---|",
-    ...summary.perMetric.map((m) => metricRow(m, summary.total)),
-    "",
-    "| Gesture | Cases | Pass | " + METRICS.join(" | ") + " |",
-    "|---|---|---|" + METRICS.map(() => "---").join("|") + "|",
-  ];
-  for (const g of [...new Set(results.map((r) => r.gesture))]) {
-    const rs = results.filter((r) => r.gesture === g);
-    lines.push(
-      `| ${g} | ${rs.length} | ${rs.filter((r) => r.pass).length} | ${METRICS.map((m) => rs.filter((r) => r.checks[m]).length).join(" | ")} |`,
-    );
-  }
-  return lines.join("\n") + "\n";
-}
-
-/** One line per case, so a baseline diff reads case by case. */
-function baseline(meta, results) {
-  const entries = [...results]
-    .sort((a, b) => a.id.localeCompare(b.id))
-    .map((r) => {
-      const v = r.error
-        ? { pass: false, error: true }
-        : {
-            pass: r.pass,
-            tracking: round(r.tracking.max),
-            drop: round(r.drop),
-            reload: round(r.reload),
-            undo: r.checks.undo,
-            smooth: round(r.smooth.p95),
-          };
-      return `    ${JSON.stringify(r.id)}: ${JSON.stringify(v)}`;
-    });
-  return `{\n  "commit": ${JSON.stringify(meta.commit)},\n  "grid": ${JSON.stringify(meta.grid)},\n  "cases": {\n${entries.join(",\n")}\n  }\n}\n`;
-}
-
 process.on("exit", killServers);
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
   process.on(signal, () => {
@@ -224,6 +115,12 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
     process.exit(130);
   });
 }
+// Stamped at start. Studio is the last commit to shipped package code, which the built CLI is assumed to come from.
+const git = (args) => execSync(`git ${args}`, { cwd: REPO }).toString().trim();
+const studio = git(
+  "log -1 --format=%h -- packages :!packages/studio/tests :!packages/studio/package.json",
+);
+const bench = git("rev-parse --short HEAD");
 const started = Date.now();
 const queue = [...cases];
 const results = [];
@@ -232,7 +129,8 @@ console.log(`edit accuracy: ${cases.length} cases, ${jobs} jobs, chrome ${chrome
 await Promise.all(Array.from({ length: jobs }, (_, i) => worker(i, queue, results)));
 results.sort((a, b) => a.id.localeCompare(b.id));
 const meta = {
-  commit: execSync("git rev-parse --short HEAD", { cwd: REPO }).toString().trim(),
+  studio,
+  bench,
   grid:
     opt.grid +
     (opt.filter ? ` filter ${opt.filter}` : "") +
@@ -241,11 +139,4 @@ const meta = {
   jobs,
   chrome,
 };
-const summary = summarize(results, (Date.now() - started) / 1000);
-writeFileSync(
-  join(out, "results.json"),
-  JSON.stringify({ meta, summary, cases: results }, null, 1),
-);
-writeFileSync(join(out, "table.md"), table(summary, meta, results));
-writeFileSync(join(out, "baseline.json"), baseline(meta, results));
-console.log(table(summary, meta, results));
+console.log(writeReport(out, meta, results, (Date.now() - started) / 1000));

@@ -129,17 +129,17 @@ async function waitForFiles(ctx, { from, want, timeout = 5000 }) {
 }
 
 // fallow-ignore-next-line complexity
+async function previewCandidate(frame) {
+  const target = await frame.$("#target");
+  const box = target && (await (await frame.frameElement())?.boundingBox());
+  return box && { area: box.width * box.height, frame, target };
+}
+
+/** The largest visible preview iframe holding the target; a frame Studio detaches mid-scan is skipped. */
 async function findTarget(page) {
-  let best = null;
-  for (const frame of page.frames()) {
-    if (!frame.url().includes("/preview")) continue;
-    const target = await frame.$("#target").catch(() => null);
-    const host = target && (await frame.frameElement());
-    const box = host && (await host.boundingBox());
-    if (box && (!best || box.width * box.height > best.area))
-      best = { area: box.width * box.height, frame, target };
-  }
-  return best;
+  const previews = page.frames().filter((f) => f.url().includes("/preview"));
+  const found = await Promise.all(previews.map((f) => previewCandidate(f).catch(() => null)));
+  return found.filter(Boolean).reduce((a, b) => (!a || b.area > a.area ? b : a), null);
 }
 
 // The handle's own session: remote object ids do not resolve in any other CDP session.
@@ -171,12 +171,19 @@ async function readQuads({ handles }) {
 
 /** The target's rendered quad, visible (cropped) quad and the screen/composition mapping, from CDP quads. */
 async function measure(ctx) {
-  if (!ctx.handles) await findHandles(ctx);
   // Studio can swap the preview into a fresh iframe; a cached handle then reads a hidden copy, so find it again.
-  const [rootQuad, targetQuad, box] = await readQuads(ctx).catch(async () => {
-    await findHandles(ctx);
-    return readQuads(ctx);
-  });
+  let read = null;
+  for (let attempt = 0; !read; attempt++) {
+    read = await (ctx.handles ? readQuads(ctx) : Promise.reject(new Error("no handles"))).catch(
+      async (error) => {
+        if (attempt === 5) throw error;
+        await sleep(100);
+        await findHandles(ctx).catch(() => undefined);
+        return null;
+      },
+    );
+  }
+  const [rootQuad, targetQuad, box] = read;
   const map = compositionMapper(rootQuad, COMPOSITION);
   const quad = targetQuad.map(map.toComp);
   const size = { width: box.width, height: box.height };
